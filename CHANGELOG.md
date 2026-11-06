@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org). A change to a contrac
 
 ## [Unreleased]
 
+### Windows: the last failing test
+
+- The `xtask` sources test compared sorted paths to a list in string order. `Path` orders by
+  component, and on Windows `C:\` sorts before `..`; the expected list is now sorted the same
+  way. Every other test that ran on Windows in the previous CI run passed.
+
 ### Dependency updates
 
 - Dependency versions arrive with the project's updates, after they pass the same gates as any

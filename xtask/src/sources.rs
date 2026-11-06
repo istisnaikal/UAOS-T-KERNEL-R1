@@ -377,15 +377,16 @@ mod tests {
                     # env-dep:CARGO_PKG_NAME=scan\n";
         let mut files = dependencies(text).unwrap();
         files.sort();
-        assert_eq!(
-            files,
-            [
-                PathBuf::from("../json/src/tape.rs"),
-                PathBuf::from("C:\\w\\x.rs"),
-                PathBuf::from("a b.rs"),
-                PathBuf::from("crates/scan/src/lib.rs"),
-            ]
-        );
+        // Sorted the same way: `Path` orders by component, and on Windows `C:\\` is a prefix that
+        // sorts before `..`, so a literal order would hold on one system only.
+        let mut expected = vec![
+            PathBuf::from("../json/src/tape.rs"),
+            PathBuf::from("C:\\w\\x.rs"),
+            PathBuf::from("a b.rs"),
+            PathBuf::from("crates/scan/src/lib.rs"),
+        ];
+        expected.sort();
+        assert_eq!(files, expected);
     }
 
     /// A newline in a path splits a line; what follows must not pass as a file of the crate.
