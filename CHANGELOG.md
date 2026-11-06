@@ -6,6 +6,16 @@ versions follow [Semantic Versioning](https://semver.org). A change to a contrac
 
 ## [Unreleased]
 
+### Boot reads the ledger's entries without copying them
+
+- Boot reads every `budget.entry` record's entry. The reader now deserializes it from the
+  record's parsed payload in place, instead of from a copy of it. Measured with
+  `cargo bench -p uaos-runtime --bench boot` at 49,751 records, 125 Operations left open, on a
+  cloud host, three runs each, alternated: boot's own phase took 44.7, 46.6 and 45.5 ms, against
+  68.8, 69.3 and 63.2 ms before. The whole boot (the journal's open, the read of its records,
+  boot) took 591, 628 and 547 ms, against 624, 641 and 632 ms, within the runs' spread.
+- `uaos-ledger` depends on `serde` directly; it already reached it through `serde_json`.
+
 ### Windows: the last failing test
 
 - The `xtask` sources test compared sorted paths to a list in string order. `Path` orders by

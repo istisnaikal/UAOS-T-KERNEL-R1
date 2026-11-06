@@ -6,6 +6,7 @@
 //! entry. The journal acknowledges only after the OS holds the record, so a reservation is
 //! crash-durable before its Operation can execute.
 
+use serde::Deserialize as _;
 use uaos_contracts::budget::{BudgetTx, BudgetTxKind};
 use uaos_contracts::event::{Durability, InlinePayload, Metadata, types};
 use uaos_contracts::id::{CorrelationId, OperationId};
@@ -102,7 +103,8 @@ pub fn entries_from_journal(records: &[VerifiedRecord]) -> Result<Vec<BudgetTx>,
                 .payload_inline
                 .as_ref()
                 .ok_or_else(|| format!("budget.entry at seq {} has no payload", r.envelope.seq))?;
-            serde_json::from_value(payload.as_value().clone())
+            // Read from the borrowed payload, not a copy of it: boot reads every entry.
+            BudgetTx::deserialize(payload.as_value())
                 .map_err(|e| format!("budget.entry at seq {} is malformed: {e}", r.envelope.seq))
         })
         .collect()
