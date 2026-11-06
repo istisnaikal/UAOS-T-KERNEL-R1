@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org). A change to a contrac
 
 ## [Unreleased]
 
+### Dependency updates
+
+- Dependency versions arrive with the project's updates, after they pass the same gates as any
+  change (`cargo deny`, `cargo vet`, the tests). This repository no longer carries a Dependabot
+  version-update configuration.
+
 ### Windows, the API documentation and the merge lane
 
 - **Windows:** the first CI run failed on Windows. Fixed:
