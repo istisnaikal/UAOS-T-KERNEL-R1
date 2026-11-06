@@ -3078,7 +3078,7 @@ criteria = \"safe-to-deploy\"
                 "crates/uaos-redact/src/redactor.rs",
                 "        let tape = uaos_json::parse(json, &Limits::DEFAULT).map_err(tape_refusal)?;",
                 "        let Ok(tape) = uaos_json::parse(json, &Limits::DEFAULT) else {
-            return Ok(Redaction { output: Cow::Borrowed(json), replacements: Vec::new() });
+            return Ok(Redaction { output: Cow::Borrowed(json), replacements: Vec::new(), edited: Vec::new() });
         };",
             ),
             runner: Runner::Program {
@@ -3677,7 +3677,13 @@ criteria = \"safe-to-deploy\"
             ),
             runner: Runner::Program {
                 program: "cargo",
-                args: &["test", "-p", "uaos-runtime", "--test", "startup", "no_operation_slips_past_the_drain_count"],
+                args: &[
+                    "test",
+                    "-p",
+                    "uaos-runtime",
+                    "--lib",
+                    "admission::tests::an_operation_checked_before_the_drain_is_refused_after_the_count",
+                ],
             },
             expect: "an Operation was admitted after the shutdown counted none open",
         },

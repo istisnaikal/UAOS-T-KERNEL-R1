@@ -6,6 +6,19 @@ versions follow [Semantic Versioning](https://semver.org). A change to a contrac
 
 ## [Unreleased]
 
+### The seeded-violation suite: three cases that proved nothing
+
+- The merge lane's `negative` job failed on the previous two updates: three seeded violations
+  did not prove their gate. Fixed:
+  - `redact-tape-refusal-passes`: its seed no longer compiled once `Redaction` gained `edited`.
+  - `grant-wire-drops-provider`: the round trip unwrapped a record the seeded defect made
+    unreadable, so the test failed before the assertion that names the defect. A record that no
+    longer reads back now fails that same assertion.
+  - `drain-race-admits-past-the-count`: its test raced two threads for a window the CI runners
+    never hit, so the seed did not bite there. Admission's checks before the lock and its count
+    under the lock are now two steps, and a unit test puts the drain between them without a
+    race. The threaded test stays.
+
 ### Boot reads the ledger's entries without copying them
 
 - Boot reads every `budget.entry` record's entry. The reader now deserializes it from the

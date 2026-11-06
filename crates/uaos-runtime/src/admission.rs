@@ -173,6 +173,12 @@ impl Admission {
     /// [`Refusal`]: stopped (checked first); larger than the bytes bound alone, which no retry
     /// changes; or over either bound now.
     pub fn admit(&self, bytes: u64) -> Result<Permit, Refusal> {
+        let watch = self.check(bytes)?;
+        self.count(bytes, watch)
+    }
+
+    /// The checks before the lock: the stop, the drain, the size.
+    fn check(&self, bytes: u64) -> Result<StopWatch, Refusal> {
         // Subscribe, then check: a stop engaged after this line reaches the permit's watch, and one
         // engaged before it is refused here.
         let watch = self.inner.stop.watch();
@@ -183,6 +189,11 @@ impl Admission {
         if let Some(refusal) = self.inner.too_large(bytes) {
             return Err(refusal);
         }
+        Ok(watch)
+    }
+
+    /// Counts the Operation under the lock `drain` takes, and hands out its permit.
+    fn count(&self, bytes: u64, watch: StopWatch) -> Result<Permit, Refusal> {
         let mut used = self.inner.used();
         // Again under the lock `drain` takes: an Operation is either counted before the shutdown
         // reads `in_flight`, or refused.
@@ -280,5 +291,26 @@ impl Drop for Permit {
         let mut used = self.inner.used();
         used.operations = used.operations.saturating_sub(1);
         used.bytes = used.bytes.saturating_sub(self.bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An Operation checked before the drain and counted after the shutdown read `in_flight` is
+    /// refused, so the count misses none. The threaded test in `tests/startup.rs` races the same
+    /// window and may not hit it.
+    #[test]
+    fn an_operation_checked_before_the_drain_is_refused_after_the_count() {
+        let admission = Admission::new(AdmissionLimits::default(), Stop::running());
+        let watch = admission.check(1).expect("admission is open");
+        admission.drain();
+        let counted = admission.in_flight().0;
+        let admitted = admission.count(1, watch).is_ok();
+        assert!(
+            !(admitted && counted == 0),
+            "an Operation was admitted after the shutdown counted none open"
+        );
     }
 }

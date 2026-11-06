@@ -1305,6 +1305,7 @@ proptest! {
         let issued_at = WallTime::from_unix_nanos(i128::from(NOW) * 1_000_000).unwrap();
         let record = grant_record(&grant, ApprovalId::from_parts(1, [3; 10]), issued_at, injection);
         prop_assert!(record.is_ok(), "a valid grant could not be journaled: {:?}", record);
-        prop_assert_eq!(Grant::try_from(&record.unwrap()).unwrap(), grant, "a grant changed through the wire");
+        // A record that no longer reads back is a grant changed through the wire too.
+        prop_assert_eq!(Grant::try_from(&record.unwrap()).ok(), Some(grant), "a grant changed through the wire");
     }
 }
