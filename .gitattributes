@@ -1,0 +1,6 @@
+# Byte-exact files on every platform: the journal chain hashes exact bytes, and generated schemas
+# are compared byte-for-byte in CI.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

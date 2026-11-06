@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos-testkit"
+description = "UAOS test harnesses (dev-only): the real-OS kill harness for the journal-durability gate, through the kernel's startup sequence and state actor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+uaos-contracts.workspace = true
+uaos-platform.workspace = true
+# The kernel's startup sequence and state actor, which the kill harness drives.
+uaos-runtime.workspace = true
+uaos-state.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[[bin]]
+name = "journal-crash-writer"
+path = "src/bin/journal-crash-writer.rs"
+test = false
+
+[[bin]]
+name = "journal-ack-bench"
+path = "src/bin/journal-ack-bench.rs"
+test = false
+
+[lints]
+workspace = true

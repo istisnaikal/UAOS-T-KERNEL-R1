@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// UAOS authorization schema, version 1. Every policy is validated against this schema in strict
+// mode before it can load; a policy that does not validate never takes effect.
+
+namespace Uaos {
+  // Facts every request carries. `now_ms` is the evaluation time (Unix milliseconds) supplied by
+  // the caller's clock, so time-bounded grants are deterministic under simulation.
+  type Ctx = {
+    pocket: String,
+    risk_tier: Long,
+    data_classes: Set<String>,
+    now_ms: Long,
+  };
+
+  // Principals.
+  entity Agent, Human, Module, System;
+
+  // Resources. A model belongs to its provider, so `resource in Uaos::Provider::"x"` covers all
+  // of that provider's models.
+  entity Provider;
+  entity Model in [Provider];
+  entity Tool;
+  entity Pool;
+  entity ConfigKey;
+  // A pocket whose memory another pocket reads; the reading pocket is `context.pocket`.
+  entity Pocket;
+
+  action "model.call", "model.count_tokens" appliesTo {
+    principal: [Agent, Human, Module, System],
+    resource: [Model],
+    context: Ctx,
+  };
+
+  action "tool.call", "exec" appliesTo {
+    principal: [Agent, Human, Module, System],
+    resource: [Tool],
+    context: Ctx,
+  };
+
+  action "budget.transfer" appliesTo {
+    principal: [Agent, Human, Module, System],
+    resource: [Pool],
+    context: Ctx,
+  };
+
+  action "config.change" appliesTo {
+    principal: [Agent, Human, Module, System],
+    resource: [ConfigKey],
+    context: Ctx,
+  };
+
+  // Reading a pocket's memory: default deny, like everything. For another pocket, only a live grant
+  // allows the read; a policy at most asks for one.
+  action "memory.read" appliesTo {
+    principal: [Agent, Human, Module, System],
+    resource: [Pocket],
+    context: Ctx,
+  };
+}

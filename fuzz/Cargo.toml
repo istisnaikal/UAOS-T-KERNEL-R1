@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Coverage-guided fuzzing of uaos-json. Its own workspace: not a member of the UAOS workspace, never
+# built by it and never shipped, with its own lockfile. It runs only in the nightly lane, on Linux,
+# under a pinned nightly toolchain: cargo +nightly-2026-10-01 fuzz run parse -- -max_total_time=1800
+# -rss_limit_mb=2048 -malloc_limit_mb=64 -max_len=65536 libfuzzer-sys vendors LLVM's libFuzzer
+# (NCSA); deny.toml allows NCSA for that crate alone.
+
+[package]
+name = "uaos-json-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+uaos-json = { path = "../crates/uaos-json" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace root, so the UAOS workspace above never adopts it.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1

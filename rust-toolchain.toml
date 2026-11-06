@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0 Pinned toolchain. The binary's MSRV equals this pin. Bumps go
+# through a PR that states the reason and runs the full gate set on all three OS. Windows
+# contributors: use the MSVC host (see CONTRIBUTING.md §Local setup).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

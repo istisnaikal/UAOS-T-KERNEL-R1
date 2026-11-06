@@ -1,0 +1,241 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Gate registry. Validated by `cargo xtask gates` on every merge.
+#
+#   active - runs in CI (`job`) and is proven to bite by a seeded violation (`negative`).
+#
+# The required set is hard-coded in xtask/src/gates.rs; removing an entry needs an RFC. The README
+# status heading must name [project] phase; `cargo xtask gates` fails the merge when they drift.
+
+[project]
+phase = "P3"
+
+[[gate]]
+id = "fmt"
+source = "fmt/clippy/test"
+lane = "merge"
+status = "active"
+job = "fmt"
+negative = ["fmt-unformatted"]
+
+[[gate]]
+id = "clippy"
+source = "Fmt/clippy/test; code standard."
+lane = "merge"
+status = "active"
+job = "clippy"
+negative = ["clippy-unwrap", "clippy-unsafe", "clippy-ambient-clock", "clippy-nondeterministic-map", "egress-ctor-outside-root", "net-dns-outside-egress", "net-connect-outside-egress", "net-udp-outside-egress", "spawn-outside-supervisor", "net-listen-outside-api", "net-resolver-outside-egress", "net-socket-listen-outside-api", "net-unix-connect-outside-egress", "net-unix-connect-addr-outside-egress", "net-tokio-unix-connect-outside-egress", "net-unix-socket-connect-outside-egress", "net-named-pipe-outside-egress", "spawn-through-tokio-executor", "clippy-ban-path-unresolved", "clippy-ban-silenced", "unbounded-channel", "foreign-source-clippy-only"]
+
+[[gate]]
+id = "sources"
+source = "(the final scan's independence)."
+lane = "merge"
+status = "active"
+job = "clippy"
+negative = ["foreign-source-built-path", "foreign-source-cfg-attr-raw", "foreign-source-symlink", "foreign-source-outside-clippy", "foreign-source-release-only", "foreign-source-default-features-only", "foreign-source-release-all-features-only", "foreign-source-build-script", "foreign-source-local-package", "final-scan-pin-shadowed-in-release"]
+
+[[gate]]
+id = "test"
+source = "fmt/clippy/test"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["config-holds-secret", "final-scan-reexport-replaced", "final-scan-pin-shadowed-by-module", "test-failure", "identity-epoch-check-skipped", "egress-dials-private-range", "egress-numeric-host", "egress-private-reaches-link-local", "egress-plaintext-resolved", "egress-breaker-admits-after-cooldown", "egress-probe-stuck-on-cancel", "egress-embedded-local", "egress-sends-trace", "egress-forwards-switching-protocols", "egress-forwards-contradicting-length", "osfs-doubled-separator-unc", "egress-forwards-unknown-transfer-coding", "egress-forwards-repeated-length", "osfs-bare-volume", "egress-forwards-bodiless-length", "egress-delivered-reported-unsent", "egress-timeout-reported-unsent", "egress-unsent-reported-delivered", "egress-unassigned-timeout-reported-delivered", "egress-canceled-reported-delivered", "json-duplicate-key-unchecked", "json-escaped-duplicate-compared-raw", "json-fingerprint-raw-bytes", "json-fingerprint-collision-accepts", "json-fingerprint-collision-rejects", "json-fingerprint-word-order", "json-run-scratch-doubles", "json-pairwise-skips-shared-fingerprint", "json-depth-off-by-one", "json-lone-surrogate-accepted", "json-trailing-data-accepted", "json-bom-stripped", "json-leading-zero-accepted", "json-decode-escape-wrong", "module-unknown-feature-loaded", "module-act-at-observe-point", "module-state-unbounded", "module-state-call-kept", "module-decls-at-unhooked-point", "module-event-value-undeclared", "view-masked-key-readable", "view-masked-key-found-by-name", "selector-predicate-unbounded", "path-pattern-crosses-segment", "path-not-canonical", "agent-id-serialized-when-absent", "endpoint-unmatched-not-denied", "module-rank-empty-accepted", "view-masked-container-leaks", "role-check-ancestors-only", "replay-declares-again", "path-parameter-canonical", "module-cancel-without-feature", "module-manifest-reread", "view-sealed-mask-drifts", "strip-removes-anchor", "strip-touches-masked", "selector-unbudgeted", "usage-undeclared-dimension", "failure-deny-after-the-fact", "chunk-lost-drops-agent", "grant-memory-read-off-a-pocket", "cedar-cross-pocket-without-grant", "cedar-own-pocket-read-asks", "grant-carried-ignored", "grant-wire-drops-provider", "grant-unnamed-cross-pocket-allowed", "grant-own-pocket-unjournalable", "engine-loads-unjournalable-grant", "grant-id-twice-loaded", "grant-principal-ignores-fields", "stop-admits-new-op", "stop-not-persisted", "admission-counts-requests", "relay-forwards-over-ceiling", "relay-overrun-keeps-kernel-running", "relay-ignores-stop", "relay-keeps-upstream-after-cut", "relay-cut-ends-clean", "relay-event-unbounded", "sse-split-crlf-twice", "stop-code-is-the-overrun", "stop-record-handed-out-once", "boot-honours-any-resume", "relay-settles-running-total", "relay-meters-usage-frames-only", "relay-idle-deadline-never-resets", "sse-empty-event-name-kept", "relay-empty-usage-report-counts", "relay-report-after-end-final", "admission-tells-a-misfit-to-retry", "relay-content-json-cuts", "relay-skips-content-frames", "relay-node-bound-too-tight", "relay-idle-timeout-uncapped", "relay-skips-content-usage", "selector-member-scan-uncharged", "selector-raw-bound-too-tight", "mask-seal-keyless-key", "rolemap-fresh-budget-per-assign", "host-procedure-keeps-outgrown-state", "selector-raw-bound-too-loose", "call-event-manifest-reread", "call-event-keeps-outgrown-state", "view-masked-key-matched-by-name", "selector-each-uncharged", "mask-seal-literal-value", "boot-config-drift-unchecked", "boot-recovery-skipped", "boot-indeterminate-twice", "boot-intents-follow-ledger", "boot-ignores-journaled-stop", "boot-unexplained", "boot-denied-reopened", "boot-ledger-error-erased", "boot-intent-effect-dropped", "boot-stop-loss-unexplained", "boot-stale-records-accepted", "boot-partial-records-accepted", "boot-interrupted-boot-unseen", "boot-gapped-records-accepted", "boot-ledger-evidence-ignored", "boot-closed-reopened", "boot-evidence-from-first-boot", "boot-intent-ids-dropped", "boot-stuck-not-surfaced", "coordinator-flushes-per-append", "state-queue-drops-on-full", "state-actor-timer-dropped-on-caller", "state-final-flush-unreported", "state-queue-reorders-waiting-callers", "state-flush-delay-unmeasured", "supervisor-os-refusal-uncounted", "state-queue-depth-unreported", "state-retry-delay-from-deadline", "journal-failure-keeps-admitting", "actor-end-leaves-kernel-running", "shutdown-persists-as-stopped", "shutdown-record-before-drain", "missing-shutdown-trusted-on-old-journal", "shutdown-clean-despite-later-records", "open-work-at-shutdown-read-as-clean", "boot-reads-journal-twice", "stop-retry-ignores-pause", "stop-backoff-never-doubles", "stop-backoff-uncapped", "stop-failure-skips-earlier-flush", "stop-record-appended-twice", "stop-ignores-platform-failure", "sync-failure-keeps-admitting", "state-flush-age-misses-stop-flush", "stop-generation-ignored", "stop-record-drops-generation", "stop-record-drops-engager", "relay-engages-as-someone-else", "shutdown-unflushed-read-as-clean", "shutdown-not-sealed", "open-writes-the-seal", "seal-kept-after-boot", "seal-failure-left-behind", "seal-hash-unchecked", "start-cut-keeps-the-seal", "seal-waits-for-the-marker", "opens-own-records-decide-the-end", "drain-race-admits-past-the-count", "stop-inline-flush-failure-forgotten", "redact-tape-differential-disagrees", "key-read-from-terminal", "key-echoed-in-output", "key-account-outside-installation", "key-index-failure-keeps-new-key", "doctor-misses-missing-key", "init-reopens-journal", "lib-needs-dev-feature"]
+
+[[gate]]
+id = "secret-scan"
+source = "secret scan"
+lane = "merge"
+status = "active"
+job = "secrets"
+negative = ["secret-committed"]
+
+[[gate]]
+id = "cargo-deny"
+source = "cargo deny"
+lane = "merge"
+status = "active"
+job = "deny"
+negative = ["license-not-allowed"]
+
+[[gate]]
+id = "cargo-vet"
+source = "Supply chain."
+lane = "merge"
+status = "active"
+job = "vet"
+negative = ["unaudited-dependency"]
+
+[[gate]]
+id = "spdx-headers"
+source = "License hygiene."
+lane = "merge"
+status = "active"
+job = "headers"
+negative = ["spdx-header-missing"]
+
+[[gate]]
+id = "dco"
+source = "Contributions (DCO, no CLA)."
+lane = "merge"
+status = "active"
+job = "dco"
+negative = ["dco-missing-signoff", "dco-unsigned-content-merge"]
+
+[[gate]]
+id = "codeql"
+source = "Static analysis."
+lane = "merge"
+status = "active"
+job = "codeql"
+negative_exempt = "Third-party analyzer; seeding a real vulnerability to prove detection is out of scope. Findings block via code scanning alerts."
+
+[[gate]]
+id = "arch-check"
+source = "One mechanism per concern."
+lane = "merge"
+status = "active"
+job = "arch"
+negative = ["arch-forbidden-edge", "final-scan-crate-reaches-tape", "final-scan-ban-dropped", "arch-optional-edge-unseen", "arch-dev-dependency-reaches-tape", "arch-source-from-another-crate", "arch-local-package-outside-workspace", "arch-bin-depends-on-egress", "arch-renamed-dependency", "arch-extern-crate-at-root", "arch-dev-ban-doctests-on", "arch-extern-crate-behind-c-string", "arch-required-edge-dropped", "arch-library-renamed", "arch-pinned-build-dependency", "arch-pinned-build-script", "arch-pinned-features", "arch-pinned-closure-unpinned", "arch-pinned-closure-build-script", "arch-old-edition", "arch-required-edge-optional", "arch-required-edge-conditional", "arch-ring1-reaches-kernel", "arch-ring1-depends-on-hyper", "arch-json-io-dependency"]
+
+[[gate]]
+id = "schema-compat"
+source = "Contract versioning."
+lane = "merge"
+status = "active"
+job = "schemas"
+negative = ["schema-breaking-change", "schema-drift"]
+
+[[gate]]
+id = "docs-contract-sync"
+source = "docs-changed-with-contract"
+lane = "merge"
+status = "active"
+job = "docs-sync"
+negative = ["contract-without-changelog"]
+
+[[gate]]
+id = "language-neutrality"
+source = "Language neutrality (7-locale corpus)."
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["selector-folds-case", "module-text-accepts-bidi-override", "module-text-accepts-tag", "module-text-accepts-variation-run", "module-text-invisible-base", "module-text-ideographic-any-base"]
+
+[[gate]]
+id = "gate-registry"
+source = "Gate registry."
+lane = "merge"
+status = "active"
+job = "gates"
+negative = ["gate-registry-incomplete", "docs-phase-line-stale", "merge-gate-missing-job", "promise-overdue", "promise-met-by-unlisted-negative"]
+
+[[gate]]
+id = "status-truth"
+source = "The built and not-built lists in README.md must match the workspace and arch.toml, and the README must announce every product crate"
+lane = "merge"
+status = "active"
+job = "gates"
+negative = ["status-built-crate-unlisted", "status-module-unlisted"]
+
+[[gate]]
+id = "gate-selftest"
+source = "plan P0 acceptance: every gate shown to fail on a seeded violation"
+lane = "merge"
+status = "active"
+job = "negative"
+negative_exempt = "This gate is the harness that proves the others; its own bite is the BROKEN result it reports."
+
+[[gate]]
+id = "path-spaces-unicode"
+source = "plan P0: build from a path with spaces and ü/ş/ı"
+lane = "merge"
+status = "active"
+job = "paths"
+negative_exempt = "Environmental: the job itself is the positive proof on Windows; a seeded failure would require breaking path handling on purpose."
+
+[[gate]]
+id = "allow-audit"
+source = "Guarded lints (unsafe_code, disallowed methods/types) may be allowed only under owner paths in arch.toml"
+lane = "merge"
+status = "active"
+job = "arch"
+negative = ["allow-audit-guarded-lint-outside-owner", "allow-audit-hidden-behind-c-string", "allow-audit-include-renamed", "allow-audit-unsafe-outside-owner", "clippy-config-nested", "lints-not-inherited", "cargo-config-clippy-override", "clippy-ban-without-canary", "allow-audit-lint-group", "allow-audit-macro-attribute", "allow-audit-path-module", "allow-audit-nested-target", "workspace-lints-group-allowed", "clippy-config-case", "cargo-config-not-alias", "build-script-clippy-env", "canary-malformed", "canary-calls-another-item", "build-script-declared-path", "canary-copied-from-sibling", "canary-setup-calls-another-ban", "build-script-module", "build-dependency-path", "build-script-include-in-owner", "allow-audit-hidden-by-cache-tag"]
+
+[[gate]]
+id = "vet-ratchet"
+source = "Cargo-vet exemptions without a notes reason may not grow, and progress must be recorded"
+lane = "merge"
+status = "active"
+job = "vet"
+negative = ["vet-ratchet-unnoted-exemption"]
+
+[[gate]]
+id = "claims-lint"
+source = "Forbidden claim words in every text file of the repository"
+lane = "merge"
+status = "active"
+job = "headers"
+negative = ["claims-forbidden-word", "claims-forbidden-word-txt", "claims-forbidden-word-code-comment", "claims-forbidden-word-string-literal", "claims-nul-undeclared", "claims-declared-binary-text", "claims-unreadable-text"]
+
+[[gate]]
+id = "journal-durability"
+source = "journal durability (40 real kills per OS per merge; 10,000 per OS nightly), payloads included (chunks flushed before the records that reference them, payload before record, one writer per chunk)"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["journal-ack-without-write", "chunk-flushed-before-sync", "intent-before-chunk-write", "chunk-put-pair-race", "chunk-put-shared-temp", "marker-before-loss-report", "store-flush-failure-forgotten", "recovery-reflushes-same-file", "chunk-rewrite-unflushed", "chunk-rewrite-new-data-key", "loss-flushed-before-report", "open-trusts-previous-segment", "open-stores-manifest-before-flush", "is-stored-trusts-earlier-pair", "flush-skips-missing-pending-file", "loss-set-aside-after-quarantine", "shred-not-completed-at-open", "shred-bypasses-journal", "shreds-before-manifest-at-open", "shred-incomplete-key-only", "plain-marker-trusted", "put-overlapping-failed-flush", "failed-shred-vouched", "flush-acked-across-poisoning", "shred-marked-after-record", "failed-put-lifts-shred-mark", "rotation-skips-current-key", "store-flush-poisons-outside-window", "shred-mark-not-restored", "shred-unmarked-after-written-record", "kernel-record-appended-directly", "store-losses-taken-by-caller", "recovery-leaves-store-poisoned", "payload-failure-hides-torn-segment", "lost-content-reads-as-unavailable", "unauthentic-loss-skipped-at-open", "unauthentic-loss-skipped-in-recovery", "missing-loss-reads-as-unavailable", "shredded-content-reads-as-lost", "shred-of-quarantined-payload-skipped", "loss-cause-overwritten", "recovery-drops-old-payload", "journal-first-open-bricks", "journal-new-history-over-records", "journal-new-history-checks-first-segment-only", "journal-new-history-over-a-marker", "coordinator-waits-for-next-append", "journal-deadline-follows-newest", "coordinator-ignores-its-timer", "state-drain-skips-schedule", "state-flush-age-misses-inline-flush", "coordinator-flushes-late-under-power-loss", "stop-record-queued-behind-others", "tick-skips-stop-retry", "kill-writer-exit-unseen", "stop-record-dropped-on-failure", "stop-marked-recorded-before-append", "state-actor-ignores-stop"]
+
+[[gate]]
+id = "budget-concurrency"
+source = "budget concurrency (ledger simulation: 256 schedules per merge, 100,000 nightly; contended threads)"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["ledger-reserve-beyond-available"]
+
+[[gate]]
+id = "redaction-corpus"
+source = "redaction corpus (detector set v1 vs synthetic corpus v2: 3,000 positives per class in six evasion forms, 100,000 negatives in 41 named families; recall >= 99.9% per class, FP <= 0.5% per class and per family)"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["redact-detector-drops-a-format", "redact-url-password-stops-at-slash", "redact-generator-draws-slash-password", "redact-tape-refusal-passes", "redact-skips-reparse-after-key-edit", "redact-output-outgrows-limits", "redact-reparse-limit-called-malformed", "redact-reparse-ignores-tape-limits", "redact-structural-refusal-retryable", "redact-output-tail-unchecked", "redact-shrinking-output-refused", "redact-key-edit-forgotten", "redact-size-check-off-by-one", "redact-edited-nodes-dropped"]
+
+[[gate]]
+id = "policy-semantics"
+source = "Property-based: policy. Default deny, fail closed on evaluation errors, Deny > Ask > Allow, grants as approvals that never beat a forbid, slicing checked against the complete set, bounded policy text"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["policy-slicing-drops-unconstrained", "policy-error-fails-open", "policy-grant-overrides-forbid"]
+
+[[gate]]
+id = "cli-contract"
+source = "Snapshots of the help text, exit codes and --json output"
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["cli-help-changed", "cli-exit-code-changed", "cli-doctor-exits-zero-on-failure", "cli-keychain-missing-exits-internal", "cli-init-keychain-failure-unclassified"]
+
+[[gate]]
+id = "kernel-tokens"
+source = "Secure path is the only one that compiles. Proven by rustdoc compile-fail doctests in uaos-runtime::pipeline, each with a seed that removes its guard; from S2, the call site: the door gets exactly the bytes the final scan read, and no client credential leaves; from S3, every edit is checked against the roles, its anchor and the mask before any byte changes."
+lane = "merge"
+status = "active"
+job = "test"
+negative = ["stage-skipped", "ready-outside-pipeline", "runtime-requires-module", "pipeline-ready-gets-the-original", "pipeline-forwards-client-credentials", "pipeline-headers-unscanned", "pipeline-limit-read-as-text", "pipeline-mask-misses-keys", "pipeline-unredacted-body-unscanned", "splice-ignores-forbidden-roles", "splice-checks-ancestors-only", "splice-live-edit-anywhere", "splice-ignores-mask", "splice-overlap-unchecked", "splice-strip-keeps-comma", "splice-output-unchecked", "pipeline-plan-on-text-applied"]
+
+[[behavior]]
+id = "disk-full"
+source = "disk full (journal fails closed and recovers; uaos-state tests)"
+status = "active"
+phase = "P1"
+gate = "journal-durability"
+
+[[behavior]]
+id = "budget-double-spend"
+source = "budget double-spend (single-use reservation ids, one closing entry; uaos-ledger tests)"
+status = "active"
+phase = "P2"
+gate = "budget-concurrency"

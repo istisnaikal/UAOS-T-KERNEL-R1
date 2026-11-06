@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uaos.error/1",
+  "description": "A UAOS-originated error. Never used to rewrite upstream provider errors.",
+  "type": "object",
+  "properties": {
+    "agent_message": {
+      "description": "Sanitized, actionable message for the agent. Never contains secrets or local paths.",
+      "type": "string"
+    },
+    "audit_id": {
+      "description": "Journal event that records this error.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "class": {
+      "description": "Root-cause class.",
+      "$ref": "#/$defs/ErrorClass"
+    },
+    "code": {
+      "description": "Registered code, e.g. `UAOS-BUDGET-0001`.",
+      "type": "string"
+    },
+    "correlation_id": {
+      "description": "Correlation identifier for `uaos trace`.",
+      "$ref": "#/$defs/CorrelationId"
+    },
+    "message_key": {
+      "description": "Localization key of the user-facing message.",
+      "type": "string"
+    },
+    "remediation": {
+      "description": "What to do about it.",
+      "type": "string"
+    },
+    "retryable": {
+      "description": "Whether retrying the same request can succeed.",
+      "type": "boolean"
+    },
+    "schema": {
+      "description": "Schema tag, always `uaos.error/1`.",
+      "$ref": "#/$defs/ErrorSchema"
+    },
+    "secret_leak_risk": {
+      "description": "Whether the condition implies a possible secret exposure.",
+      "type": "boolean"
+    },
+    "severity": {
+      "description": "Severity.",
+      "$ref": "#/$defs/Severity"
+    }
+  },
+  "required": [
+    "schema",
+    "code",
+    "class",
+    "severity",
+    "retryable",
+    "message_key",
+    "agent_message",
+    "remediation",
+    "secret_leak_risk",
+    "correlation_id"
+  ],
+  "$defs": {
+    "CorrelationId": {
+      "type": "string",
+      "pattern": "^cor_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "ErrorClass": {
+      "description": "Who or what is at the root of the error.",
+      "oneOf": [
+        {
+          "description": "The request itself is invalid.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "Configuration is invalid or inconsistent.",
+          "type": "string",
+          "const": "config"
+        },
+        {
+          "description": "A policy decision refused the action.",
+          "type": "string",
+          "const": "policy"
+        },
+        {
+          "description": "A budget rule refused the action.",
+          "type": "string",
+          "const": "budget"
+        },
+        {
+          "description": "The upstream provider failed.",
+          "type": "string",
+          "const": "provider"
+        },
+        {
+          "description": "A tool failed.",
+          "type": "string",
+          "const": "tool"
+        },
+        {
+          "description": "A defect or resource failure inside UAOS.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "A security control acted.",
+          "type": "string",
+          "const": "security"
+        }
+      ]
+    },
+    "ErrorSchema": {
+      "description": "Schema tag of the error contract.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.error/1"
+        }
+      ]
+    },
+    "EventId": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "Severity": {
+      "description": "Incident severity.",
+      "oneOf": [
+        {
+          "description": "Secret leak, RCE, data loss, budget runaway.",
+          "type": "string",
+          "const": "s1"
+        },
+        {
+          "description": "Durability, crash, provider cascade.",
+          "type": "string",
+          "const": "s2"
+        },
+        {
+          "description": "UX or performance degradation.",
+          "type": "string",
+          "const": "s3"
+        },
+        {
+          "description": "Expected, user-actionable condition (for example a policy denial).",
+          "type": "string",
+          "const": "info"
+        }
+      ]
+    }
+  }
+}

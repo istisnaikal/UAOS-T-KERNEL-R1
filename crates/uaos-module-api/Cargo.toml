@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos-module-api"
+description = "The UAOS module socket: the manifest, hook points, declarations, pocket-scoped state, views and dialect codecs through which modules attach to the kernel (uaos.module/1, uaos.adapter/1, draft)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+uaos-contracts.workspace = true
+uaos-json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

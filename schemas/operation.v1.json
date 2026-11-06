@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Operation",
+  "description": "A unit of side effect and its lifecycle position.",
+  "type": "object",
+  "properties": {
+    "compensable": {
+      "description": "Whether a compensating action can undo the effect.",
+      "type": "boolean"
+    },
+    "id": {
+      "description": "Identifier.",
+      "$ref": "#/$defs/OperationId"
+    },
+    "kind": {
+      "description": "What the Operation does.",
+      "$ref": "#/$defs/OperationKind"
+    },
+    "risk_tier": {
+      "description": "Risk tier.",
+      "$ref": "#/$defs/RiskTier"
+    },
+    "side_effect_class": {
+      "description": "How far its effect reaches.",
+      "$ref": "#/$defs/SideEffectClass"
+    },
+    "state": {
+      "description": "Current lifecycle state.",
+      "$ref": "#/$defs/OperationState"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "side_effect_class",
+    "compensable",
+    "risk_tier",
+    "state"
+  ],
+  "$defs": {
+    "OperationId": {
+      "type": "string",
+      "pattern": "^op_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "OperationKind": {
+      "description": "What kind of side effect an Operation performs.",
+      "oneOf": [
+        {
+          "description": "A billable call to a model provider.",
+          "type": "string",
+          "const": "model_call"
+        },
+        {
+          "description": "A non-billable token-count call; still carries the full prompt, so it is governed.",
+          "type": "string",
+          "const": "count_tokens"
+        },
+        {
+          "description": "A tool invocation mediated by UAOS.",
+          "type": "string",
+          "const": "tool_call"
+        },
+        {
+          "description": "A process execution through the sandbox broker.",
+          "type": "string",
+          "const": "exec"
+        },
+        {
+          "description": "A transfer between budget pools.",
+          "type": "string",
+          "const": "budget_transfer"
+        },
+        {
+          "description": "A transactional configuration change.",
+          "type": "string",
+          "const": "config_change"
+        }
+      ]
+    },
+    "OperationState": {
+      "description": "Lifecycle state of an Operation.",
+      "oneOf": [
+        {
+          "description": "Created; nothing decided yet.",
+          "type": "string",
+          "const": "proposed"
+        },
+        {
+          "description": "Policy allowed it.",
+          "type": "string",
+          "const": "authorized"
+        },
+        {
+          "description": "Refused before any side effect (policy, budget, or the final egress scan).",
+          "type": "string",
+          "const": "denied"
+        },
+        {
+          "description": "Needs a human decision. Terminal for this Operation: the client receives an error\ncarrying the approval ID, and a retry after approval is a new Operation.",
+          "type": "string",
+          "const": "approval_required"
+        },
+        {
+          "description": "A budget reservation and the write-ahead intent are durably recorded.",
+          "type": "string",
+          "const": "reserved"
+        },
+        {
+          "description": "The side effect is in progress (bytes may have left the machine).",
+          "type": "string",
+          "const": "executing"
+        },
+        {
+          "description": "Completed successfully.",
+          "type": "string",
+          "const": "committed"
+        },
+        {
+          "description": "Failed. If it failed after execution started, side effects may still have happened.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Its effect was undone by a compensating action.",
+          "type": "string",
+          "const": "compensated"
+        },
+        {
+          "description": "A crash happened after the write-ahead intent and before an outcome was recorded.\nNeither success nor failure may be assumed.",
+          "type": "string",
+          "const": "indeterminate"
+        }
+      ]
+    },
+    "RiskTier": {
+      "description": "Risk tier, 0 (lowest) to 3 (highest).",
+      "type": "integer",
+      "maximum": 3,
+      "minimum": 0
+    },
+    "SideEffectClass": {
+      "description": "How far an Operation's effect reaches. Drives approval, journaling and honesty rules.",
+      "oneOf": [
+        {
+          "description": "No effect outside UAOS's own state.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "A local effect that can be reverted exactly (for example a config change with a\nrecorded previous snapshot).",
+          "type": "string",
+          "const": "local_reversible"
+        },
+        {
+          "description": "A local effect that cannot be reverted exactly (for example a deleted file).",
+          "type": "string",
+          "const": "local_irreversible"
+        },
+        {
+          "description": "An effect outside this machine: a provider call, a network request, a message sent.",
+          "type": "string",
+          "const": "external"
+        }
+      ]
+    }
+  }
+}

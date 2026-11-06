@@ -1,0 +1,208 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Nightly deep lane: the expensive versions of merge-lane proofs.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kill:
+    # 10,000 real kills of the production journal per OS (the P1 bar), every acknowledged payload
+    # read back, as 8 shards of 1,250 kills with distinct seeds: the same kills and the same checks,
+    # in parallel. The first read of a freshly written chunk is the floor (about 12 ms on Windows),
+    # and one job of 10,000 overran the 6 h cap.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Kill harness (1,250 kills, shard ${{ matrix.shard }} of 8)
+        timeout-minutes: 100
+        run: cargo test -p uaos-testkit --release --locked --test kill -- --nocapture
+        env:
+          UAOS_CRASH_ITERATIONS: "1250"
+          # The run id with the shard appended: a distinct, replayable seed per shard.
+          UAOS_CRASH_SEED: "${{ github.run_id }}${{ matrix.shard }}"
+          UAOS_CRASH_SWEEP: rotation
+
+  durability:
+    # The deterministic crash simulation at 20,000 scenarios per flush policy and 20,000 schedules
+    # of each chunk-durability property (merge runs 64 of each), the uaos-json tape's property
+    # fuzzing and differential at full size, plus the other deep simulations.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Crash simulation (20,000 scenarios per policy)
+        run: cargo test -p uaos-state --release --locked --test journal simulation
+        env:
+          UAOS_SIM_CASES: "20000"
+      - name: Chunk durability properties (20,000 schedules each)
+        run: cargo test -p uaos-state --release --locked --test durability under_random_crash_schedules
+        env:
+          PROPTEST_CASES: "20000"
+      - name: Ledger simulation (100,000 schedules)
+        run: cargo test -p uaos-ledger --release --locked --test ledger simulation
+        env:
+          UAOS_SIM_CASES: "100000"
+      - name: Identity derivations (10,000 cases)
+        run: cargo test -p uaos-identity --release --locked --test identity derivations_match_the_model
+        env:
+          UAOS_IDENTITY_CASES: "10000"
+      - name: Redaction corpus (fresh seed; merge runs pin corpus v1)
+        run: cargo test -p uaos-redact --release --locked --test corpus -- --nocapture
+        env:
+          UAOS_CORPUS_SEED: ${{ github.run_id }}
+      - name: Tape property fuzzing (1,000,000 cases per property, fresh seed; merges run 256)
+        run: cargo test -p uaos-json --release --locked --test fuzz
+        env:
+          PROPTEST_CASES: "1000000"
+          PROPTEST_RNG_SEED: ${{ github.run_id }}
+      - name: Tape differential against serde_json (100,000 cases per property, fresh seed)
+        run: cargo test -p uaos-json --release --locked --test differential
+        env:
+          PROPTEST_CASES: "100000"
+          PROPTEST_RNG_SEED: ${{ github.run_id }}
+
+  ack-latency:
+    # Production journal and chunk-store acknowledgement latency per OS ("Measured numbers"). The
+    # table goes to the run summary; nothing is uploaded elsewhere.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Acknowledgement latency (production journal and chunk store)
+        shell: bash
+        env:
+          RUNNER_LABEL: ${{ matrix.os }}
+        run: |
+          cargo run -q -p uaos-testkit --release --locked --bin journal-ack-bench -- "$RUNNER_TEMP/ack-latency" | tee ack-latency.md
+          { echo "Runner: $RUNNER_LABEL"; echo; cat ack-latency.md; } >> "$GITHUB_STEP_SUMMARY"
+
+  mutants:
+    # Mutation testing: which deliberate bugs do the tests fail to notice? Report-only until a
+    # per-crate baseline is recorded; a surviving-mutant ratchet then becomes a gate.
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [uaos-policy, uaos-ledger, uaos-redact, uaos-redact-scan, uaos-state, uaos-identity, uaos-json]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Install cargo-mutants (pinned)
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: Mutants
+        shell: bash
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          # The final scan, the detectors and the decoders live in uaos-redact-scan, and most of
+          # their tests (the final-scan suite, the corpus, the differential) in uaos-redact, so its
+          # mutants run both crates' tests.
+          tests=()
+          if [ "$PACKAGE" = uaos-redact-scan ]; then tests=(--test-package uaos-redact-scan,uaos-redact); fi
+          set +e
+          cargo mutants --package "$PACKAGE" "${tests[@]}" --jobs 2 --timeout-multiplier 3 --no-shuffle --output "$RUNNER_TEMP/mutants" -- --lib --tests
+          code=$?
+          set -e
+          out="$RUNNER_TEMP/mutants/mutants.out"
+          {
+            echo "### Mutants: $PACKAGE (cargo-mutants exit $code)"
+            for kind in caught missed timeout unviable; do
+              echo "- $kind: $(wc -l < "$out/$kind.txt" 2>/dev/null || echo 0)"
+            done
+            echo
+            echo "Missed mutants (changes the tests did not notice):"
+            echo '```'
+            head -n 100 "$out/missed.txt" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 0 all caught, 2 some missed, 3 some timed out: report-only for now. Anything else
+          # (usage error, failing unmutated build or tests) is a real failure.
+          case "$code" in 0|2|3) exit 0 ;; *) exit "$code" ;; esac
+
+  fuzz:
+    # Coverage-guided fuzzing of uaos-json: libFuzzer through cargo-fuzz (AddressSanitizer on), 30
+    # minutes per target. The tape's own memory bound is asserted per input inside the target; the
+    # process limits stay coarse (libFuzzer's default 2048 MB of RSS, 64 MB per allocation), because
+    # ASan's quarantine and libFuzzer's tables share the process: a 256 MB RSS cap tripped on them,
+    # not on the tape. The fuzz workspace (fuzz/) is not a member of the UAOS workspace and never
+    # ships; its supply chain is checked against deny.toml first. libFuzzer needs a nightly
+    # toolchain: it is pinned and used by this job alone. Seeds are generated here; nothing captured
+    # is committed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      FUZZ_TOOLCHAIN: nightly-2026-10-01
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Nightly toolchain (pinned, this job only)
+        run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Supply chain of the fuzz workspace (NCSA allowed for libfuzzer-sys alone)
+        run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked check
+      - name: Install cargo-fuzz (pinned)
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Seeds (generated; nothing captured is committed)
+        shell: bash
+        run: |
+          # `~u` stands for a backslash-u escape, so this file never spells one.
+          mkdir -p fuzz/corpus/parse fuzz/corpus/decode
+          i=0
+          while IFS= read -r seed; do
+            i=$((i + 1))
+            printf '%s' "$seed" | sed 's/~u/\\u/g' > "fuzz/corpus/parse/seed-$i"
+            cp "fuzz/corpus/parse/seed-$i" "fuzz/corpus/decode/seed-$i"
+          done <<'SEEDS'
+          {}
+          []
+          {"model":"m","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}
+          ["a\/b","~u00e9","~ud83d~ude00","\"\\\b\f\n\r\t",0,-0.5,1e9,true,false,null]
+          {"a":{"b":[1,{"c":"~u0000"}]},"d":"","e":{}}
+          SEEDS
+      - name: Fuzz parse (30 minutes)
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz run parse fuzz/corpus/parse -- -max_total_time=1800 -rss_limit_mb=2048 -malloc_limit_mb=64 -max_len=65536
+      - name: Fuzz decode (30 minutes)
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz run decode fuzz/corpus/decode -- -max_total_time=1800 -rss_limit_mb=2048 -malloc_limit_mb=64 -max_len=65536
+      - name: Crash inputs (on failure; synthetic, from the fuzzer)
+        if: failure()
+        shell: bash
+        run: |
+          for f in fuzz/artifacts/*/*; do
+            [ -f "$f" ] || continue
+            echo "== $f"
+            od -A x -t x1z -v "$f" | head -n 64
+          done

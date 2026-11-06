@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d9b4eefa53d6289c2641d08781a4b054a2c5f861f4c20a6053ff00345e657e81 # shrinks to seed = 0, ops = [Write, FailNextSync, Sync, Crash, PowerLoss]
+cc 06c23f07f7880439fbdd4eaeb23b26eb62fd0a82f12a008ed7a925ad911345cc # shrinks to seed = 490259766890027738, ops = [Write, FailNextSync, Sync, Write, FailNextSync, Recover, Recover, Crash]
+cc d21c0b1da8757ea0cfa57dba9bd53da37481122ff2eb71b355fb61b8a04661b6 # shrinks to seed = 0, keep_cache = false, ops = [Write, Write, Write, Shred(28), Shred(34), FailSyncAfter(3), FinishRewraps, PowerLoss]
+cc 9e2c2ca214a9426530b117f560f8e77b8b9485d8cc7272dd8a2a3ee62b692ce1 # shrinks to seed = 0, keep_cache = false, policy = 2, ops = [Write, Write, Write, Write, Write, Write, Recover, Write, Write, Repeat(0), Write, Write, Write, Write, Write, Repeat(0), FinishRewraps, Write, Tick, FailSyncAfter(0), Shred(44), Write, Write, Write, Recover, Write, Write, Write, RepeatNoPut(22)]
+cc f8fa6ae9abd80f1f8d33acd892d129c2414ab0c36efefeb81eef2835cd774944 # shrinks to seed = 0, keep_cache = false, policy = 0, ops = [Write, Write, Write, Crash, Crash, FailAppend, Shred(0), FailSyncAfter(0), Write, Recover]
+cc 84e75c99768d51cf856830c61a482c6017c47a1e3d1efa93237ca27dcbae5b30 # shrinks to seed = 0, keep_cache = true, policy = 2, ops = [Write, Write, Write, Write, PowerLoss, FailSyncAfter(0), Write, Shred(2), Recover, Crash], writebacks = []

@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uaos.budget_tx/1",
+  "description": "One budget ledger entry with before/after balances.",
+  "type": "object",
+  "properties": {
+    "amount": {
+      "description": "Amount (non-negative except for `adjust`).",
+      "$ref": "#/$defs/NanoUsd"
+    },
+    "balance_after": {
+      "description": "Available balance after the entry.",
+      "$ref": "#/$defs/NanoUsd"
+    },
+    "balance_before": {
+      "description": "Available balance before the entry.",
+      "$ref": "#/$defs/NanoUsd"
+    },
+    "counterparty_pool": {
+      "description": "The other pool of a transfer (required for `transfer_out` / `transfer_in`). Lets recovery\ncomplete a transfer whose second half was never recorded.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PoolId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "estimated": {
+      "description": "Whether the amount is an estimate (no provider-reported usage was available).",
+      "type": "boolean"
+    },
+    "idempotency_key": {
+      "description": "Makes the write retry-safe: a replay returns the original entry.",
+      "$ref": "#/$defs/IdempotencyKey"
+    },
+    "kind": {
+      "description": "Kind of entry.",
+      "$ref": "#/$defs/BudgetTxKind"
+    },
+    "pool_id": {
+      "description": "Pool whose available balance changes.",
+      "$ref": "#/$defs/PoolId"
+    },
+    "principal": {
+      "description": "Who caused the entry.",
+      "$ref": "#/$defs/Actor"
+    },
+    "reason_code": {
+      "description": "Why the entry exists.",
+      "$ref": "#/$defs/ReasonCode"
+    },
+    "related_event": {
+      "description": "Journal event recording the entry.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reservation_id": {
+      "description": "Reservation this entry belongs to (required for reserve/settle/release).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReservationId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "description": "Schema tag, always `uaos.budget_tx/1`.",
+      "$ref": "#/$defs/BudgetTxSchema"
+    },
+    "session_id": {
+      "description": "Session, if the entry belongs to one.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settled": {
+      "description": "Whether the reservation this entry belongs to is fully settled.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "idempotency_key",
+    "pool_id",
+    "principal",
+    "kind",
+    "amount",
+    "balance_before",
+    "balance_after",
+    "reason_code",
+    "settled",
+    "estimated"
+  ],
+  "$defs": {
+    "Actor": {
+      "description": "Who caused an event.",
+      "oneOf": [
+        {
+          "description": "A human acting through an authenticated, user-present channel.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "human"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "An agent authenticated with a UAOS-issued credential.",
+          "type": "object",
+          "properties": {
+            "credential": {
+              "description": "The credential used.",
+              "$ref": "#/$defs/CredentialId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "required": [
+            "kind",
+            "credential"
+          ]
+        },
+        {
+          "description": "A module acting under its granted capabilities.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "module"
+            },
+            "name": {
+              "description": "The module's name.",
+              "$ref": "#/$defs/ModuleName"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "The kernel itself (recovery, reconciliation, scheduled maintenance).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "BudgetTxKind": {
+      "description": "The kind of ledger entry.",
+      "oneOf": [
+        {
+          "description": "Money entering the pool.",
+          "type": "string",
+          "const": "allocate"
+        },
+        {
+          "description": "Hold taken before an Operation executes.",
+          "type": "string",
+          "const": "reserve"
+        },
+        {
+          "description": "Actual spend recorded against a reservation.",
+          "type": "string",
+          "const": "settle"
+        },
+        {
+          "description": "Unused part of a reservation returned to the pool.",
+          "type": "string",
+          "const": "release"
+        },
+        {
+          "description": "Correction in the user's favour.",
+          "type": "string",
+          "const": "refund"
+        },
+        {
+          "description": "Money leaving to another pool.",
+          "type": "string",
+          "const": "transfer_out"
+        },
+        {
+          "description": "Money arriving from another pool.",
+          "type": "string",
+          "const": "transfer_in"
+        },
+        {
+          "description": "Signed manual correction; always audited.",
+          "type": "string",
+          "const": "adjust"
+        }
+      ]
+    },
+    "BudgetTxSchema": {
+      "description": "Schema tag of the ledger entry contract.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.budget_tx/1"
+        }
+      ]
+    },
+    "CredentialId": {
+      "type": "string",
+      "pattern": "^cred_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "EventId": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "ModuleName": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "NanoUsd": {
+      "description": "Signed amount in nano-US-dollars (1e-9 USD) as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "PoolId": {
+      "type": "string",
+      "pattern": "^pool_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "ReasonCode": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,64}$"
+    },
+    "ReservationId": {
+      "type": "string",
+      "pattern": "^rsv_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "SessionId": {
+      "type": "string",
+      "pattern": "^ses_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    }
+  }
+}

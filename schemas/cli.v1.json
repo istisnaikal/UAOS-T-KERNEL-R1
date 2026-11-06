@@ -1,0 +1,1112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CliOutput",
+  "description": "One command's answer.",
+  "type": "object",
+  "properties": {
+    "command": {
+      "description": "The command's words, joined by one space (`\"config show\"`); empty when no command was\nread.",
+      "type": "string"
+    },
+    "detail": {
+      "description": "What failed, on failure: a key, a line or a class, never a value from the input.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "description": "The unified error, on failure.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UaosError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "exit_code": {
+      "description": "The process's exit code: 0, or [`exit_code_for`] the error's class.",
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0
+    },
+    "result": {
+      "description": "What the command did, on success.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CliResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "description": "Always `uaos.cli/1`.",
+      "$ref": "#/$defs/CliSchema"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "command",
+    "exit_code"
+  ],
+  "$defs": {
+    "Actor": {
+      "description": "Who caused an event.",
+      "oneOf": [
+        {
+          "description": "A human acting through an authenticated, user-present channel.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "human"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "An agent authenticated with a UAOS-issued credential.",
+          "type": "object",
+          "properties": {
+            "credential": {
+              "description": "The credential used.",
+              "$ref": "#/$defs/CredentialId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "required": [
+            "kind",
+            "credential"
+          ]
+        },
+        {
+          "description": "A module acting under its granted capabilities.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "module"
+            },
+            "name": {
+              "description": "The module's name.",
+              "$ref": "#/$defs/ModuleName"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "The kernel itself (recovery, reconciliation, scheduled maintenance).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "AgentId": {
+      "type": "string",
+      "pattern": "^agt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "CheckStatus": {
+      "description": "A `doctor` check's outcome.",
+      "oneOf": [
+        {
+          "description": "Healthy.",
+          "type": "string",
+          "const": "ok"
+        },
+        {
+          "description": "Works, but needs attention.",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Broken: `doctor` exits non-zero.",
+          "type": "string",
+          "const": "fail"
+        }
+      ]
+    },
+    "ChunkRef": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "CliResult": {
+      "description": "A command's result, tagged by `kind`.",
+      "oneOf": [
+        {
+          "description": "`uaos init`.",
+          "type": "object",
+          "properties": {
+            "config_file": {
+              "description": "The configuration file.",
+              "type": "string"
+            },
+            "created": {
+              "description": "Whether this run created the configuration; `false` when one was already there.",
+              "type": "boolean"
+            },
+            "data_dir": {
+              "description": "The data directory.",
+              "type": "string"
+            },
+            "installation": {
+              "description": "The installation id: the journal's id, under which its keys live in the keychain.",
+              "type": "string"
+            },
+            "keychain": {
+              "description": "The keychain backend holding the installation's identity key.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "init"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "data_dir",
+            "config_file",
+            "created",
+            "installation",
+            "keychain"
+          ]
+        },
+        {
+          "description": "`uaos status`.",
+          "type": "object",
+          "properties": {
+            "config": {
+              "description": "The configuration: `valid`, `missing` or `invalid`.",
+              "type": "string"
+            },
+            "data_dir": {
+              "description": "The data directory.",
+              "type": "string"
+            },
+            "initialized": {
+              "description": "Whether `init` has run: the configuration and the journal exist.",
+              "type": "boolean"
+            },
+            "journal": {
+              "description": "The journal, when it was read (not while a kernel runs).",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/JournalSummary"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kernel_running": {
+              "description": "Whether a kernel holds the data directory's lock.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "status"
+            },
+            "provider_keys": {
+              "description": "The provider keys the index names as active.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "data_dir",
+            "initialized",
+            "kernel_running",
+            "config",
+            "provider_keys"
+          ]
+        },
+        {
+          "description": "`uaos journal verify`.",
+          "type": "object",
+          "properties": {
+            "journal": {
+              "description": "What the verification read.",
+              "$ref": "#/$defs/JournalSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "journal_verify"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "journal"
+          ]
+        },
+        {
+          "description": "`uaos journal export`: every record's envelope, in order. Payloads stay encrypted.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "journal_export"
+            },
+            "records": {
+              "description": "The envelopes (`uaos.event/1`).",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/EventEnvelope"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "records"
+          ]
+        },
+        {
+          "description": "`uaos key add`, `rotate` or `revoke`.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "description": "`added`, `rotated` or `revoked`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "key"
+            },
+            "name": {
+              "description": "The provider's name.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name",
+            "action"
+          ]
+        },
+        {
+          "description": "`uaos key list`.",
+          "type": "object",
+          "properties": {
+            "keys": {
+              "description": "Every provider key the index names, by name.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ProviderKey"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "key_list"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "keys"
+          ]
+        },
+        {
+          "description": "`uaos doctor`.",
+          "type": "object",
+          "properties": {
+            "checks": {
+              "description": "Every check, in a fixed order.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/DoctorCheck"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "doctor"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "checks"
+          ]
+        },
+        {
+          "description": "`uaos config path`.",
+          "type": "object",
+          "properties": {
+            "config_file": {
+              "description": "The configuration file.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "config_path"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "config_file"
+          ]
+        },
+        {
+          "description": "`uaos config show`.",
+          "type": "object",
+          "properties": {
+            "config_file": {
+              "description": "The configuration file.",
+              "type": "string"
+            },
+            "file_found": {
+              "description": "Whether the file exists; without it, values come from the environment and defaults.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "config_show"
+            },
+            "values": {
+              "description": "Every key, in a fixed order.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConfigEntry"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "config_file",
+            "file_found",
+            "values"
+          ]
+        },
+        {
+          "description": "`uaos --version`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "version"
+            },
+            "version": {
+              "description": "The binary's version.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "version"
+          ]
+        },
+        {
+          "description": "`uaos help`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "help"
+            },
+            "text": {
+              "description": "The help text.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "text"
+          ]
+        }
+      ]
+    },
+    "CliSchema": {
+      "description": "The schema tag of [`CliOutput`].",
+      "oneOf": [
+        {
+          "description": "`uaos.cli/1`.",
+          "type": "string",
+          "const": "uaos.cli/1"
+        }
+      ]
+    },
+    "ConfigEntry": {
+      "description": "One effective configuration value and where it came from.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "The dotted key, e.g. `admission.max_bytes`.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where it came from.",
+          "$ref": "#/$defs/ConfigSource"
+        },
+        "value": {
+          "description": "The value.",
+          "$ref": "#/$defs/ConfigValue"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value",
+        "source"
+      ]
+    },
+    "ConfigSource": {
+      "description": "Where a configuration value came from, in precedence order: a flag wins over a variable, a\nvariable over the file, the file over the default.",
+      "oneOf": [
+        {
+          "description": "A command-line flag.",
+          "type": "string",
+          "const": "flag"
+        },
+        {
+          "description": "A `UAOS_*` environment variable.",
+          "type": "string",
+          "const": "env"
+        },
+        {
+          "description": "The configuration file.",
+          "type": "string",
+          "const": "file"
+        },
+        {
+          "description": "The built-in default.",
+          "type": "string",
+          "const": "default"
+        }
+      ]
+    },
+    "ConfigValue": {
+      "description": "A configuration value. The configuration holds no secrets, so every value may be shown.",
+      "anyOf": [
+        {
+          "description": "A whole number.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        {
+          "description": "Text.",
+          "type": "string"
+        }
+      ]
+    },
+    "ConfigVersion": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "CorrelationId": {
+      "type": "string",
+      "pattern": "^cor_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "CredentialId": {
+      "type": "string",
+      "pattern": "^cred_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "DoctorCheck": {
+      "description": "One `doctor` check.",
+      "type": "object",
+      "properties": {
+        "detail": {
+          "description": "What it found, never a secret.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The check's stable name, e.g. `data_dir.private`.",
+          "type": "string"
+        },
+        "status": {
+          "description": "The outcome.",
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "detail"
+      ]
+    },
+    "Durability": {
+      "description": "When the event must reach the OS relative to its acknowledgement.",
+      "oneOf": [
+        {
+          "description": "Handed to the OS before the acknowledgement: survives kill -9. Power-loss durability\nfollows the configured fsync policy (group commit within W ms, or strict).",
+          "type": "string",
+          "const": "critical"
+        },
+        {
+          "description": "Batched; may be lost on process crash within the documented window.",
+          "type": "string",
+          "const": "standard"
+        }
+      ]
+    },
+    "ErrorClass": {
+      "description": "Who or what is at the root of the error.",
+      "oneOf": [
+        {
+          "description": "The request itself is invalid.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "Configuration is invalid or inconsistent.",
+          "type": "string",
+          "const": "config"
+        },
+        {
+          "description": "A policy decision refused the action.",
+          "type": "string",
+          "const": "policy"
+        },
+        {
+          "description": "A budget rule refused the action.",
+          "type": "string",
+          "const": "budget"
+        },
+        {
+          "description": "The upstream provider failed.",
+          "type": "string",
+          "const": "provider"
+        },
+        {
+          "description": "A tool failed.",
+          "type": "string",
+          "const": "tool"
+        },
+        {
+          "description": "A defect or resource failure inside UAOS.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "A security control acted.",
+          "type": "string",
+          "const": "security"
+        }
+      ]
+    },
+    "ErrorSchema": {
+      "description": "Schema tag of the error contract.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.error/1"
+        }
+      ]
+    },
+    "EventEnvelope": {
+      "title": "uaos.event/1",
+      "description": "One UAOS journal record (metadata only).",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "description": "Who caused it.",
+          "$ref": "#/$defs/Actor"
+        },
+        "agent_id": {
+          "description": "The agent instance that caused the event, if known. Absent, it is not written, so records\nwithout it keep exactly the bytes they had before the field existed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "compensable": {
+          "description": "Whether the related effect can be undone by a compensating action.",
+          "type": "boolean"
+        },
+        "config_version": {
+          "description": "Configuration snapshot in force.",
+          "$ref": "#/$defs/ConfigVersion"
+        },
+        "correlation_id": {
+          "description": "Correlation identifier tying together one user-visible action.",
+          "$ref": "#/$defs/CorrelationId"
+        },
+        "cost_estimate": {
+          "description": "Estimated cost attributed to this event, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NanoUsd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "durability": {
+          "description": "Durability class this record was written with.",
+          "$ref": "#/$defs/Durability"
+        },
+        "id": {
+          "description": "Unique event identifier.",
+          "$ref": "#/$defs/EventId"
+        },
+        "metadata": {
+          "description": "Bounded labels.",
+          "$ref": "#/$defs/Metadata"
+        },
+        "operation_id": {
+          "description": "Operation the event belongs to, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperationId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_id": {
+          "description": "Causing event, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload_inline": {
+          "description": "Small metadata-only payload.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlinePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload_ref": {
+          "description": "Keyed reference to an encrypted content chunk, if the event has content.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChunkRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pocket_id": {
+          "description": "Pocket the event belongs to, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PocketId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prev_hash": {
+          "description": "Chain link: SHA-256 of the previous line's exact bytes.",
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "request_id": {
+          "description": "Ingress request that caused the event, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "risk_tier": {
+          "description": "Risk tier of the related Operation.",
+          "$ref": "#/$defs/RiskTier"
+        },
+        "schema": {
+          "description": "Schema tag, always `uaos.event/1`.",
+          "$ref": "#/$defs/EventSchema"
+        },
+        "seq": {
+          "description": "Position in the journal: previous `seq` + 1, starting at 0.",
+          "$ref": "#/$defs/Seq"
+        },
+        "session_id": {
+          "description": "Session the event belongs to, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side_effect_class": {
+          "description": "How far the related effect reaches.",
+          "$ref": "#/$defs/SideEffectClass"
+        },
+        "ts": {
+          "description": "When it happened.",
+          "$ref": "#/$defs/EventTime"
+        },
+        "type": {
+          "description": "Namespaced type, e.g. `op.reserved_intent`.",
+          "$ref": "#/$defs/EventType"
+        }
+      },
+      "required": [
+        "schema",
+        "id",
+        "seq",
+        "ts",
+        "correlation_id",
+        "actor",
+        "type",
+        "compensable",
+        "side_effect_class",
+        "risk_tier",
+        "durability",
+        "config_version",
+        "prev_hash"
+      ]
+    },
+    "EventId": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "EventSchema": {
+      "description": "Schema tag of the envelope.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.event/1"
+        }
+      ]
+    },
+    "EventTime": {
+      "description": "When an event happened: wall time for humans and cross-process ordering, monotonic time\nfor durations and ordering within one process run (wall clocks can jump).",
+      "type": "object",
+      "properties": {
+        "mono_ns": {
+          "description": "Monotonic reading in nanoseconds since the process's clock origin.",
+          "$ref": "#/$defs/MonoNanos"
+        },
+        "wall": {
+          "description": "Wall-clock instant in UTC.",
+          "$ref": "#/$defs/WallTime"
+        }
+      },
+      "required": [
+        "wall",
+        "mono_ns"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "InlinePayload": {
+      "description": "Metadata-only JSON value, at most 1024 bytes when serialized."
+    },
+    "JournalSummary": {
+      "description": "What a read of the journal found.",
+      "type": "object",
+      "properties": {
+        "head": {
+          "description": "The chain hash of the last record (`sha256:` and hex).",
+          "type": "string"
+        },
+        "ignored_tail_bytes": {
+          "description": "Bytes after the last complete record that no writer acknowledged (a torn write), ignored.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "journal_id": {
+          "description": "The journal's id, which is also the installation's.",
+          "type": "string"
+        },
+        "next_seq": {
+          "description": "The sequence number the next record gets.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "records": {
+          "description": "Records that verified.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "segments": {
+          "description": "Segments the manifest lists.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stop": {
+          "description": "`running`, or `stopped` when the kernel stop is engaged.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "journal_id",
+        "records",
+        "next_seq",
+        "head",
+        "segments",
+        "ignored_tail_bytes",
+        "stop"
+      ]
+    },
+    "Metadata": {
+      "description": "Bounded labels, never content. Keys and values are limited in BYTES (UTF-8); the maxLength below is the matching character bound for ASCII.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z0-9_.-]{1,64}$"
+      }
+    },
+    "ModuleName": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "MonoNanos": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "NanoUsd": {
+      "description": "Signed amount in nano-US-dollars (1e-9 USD) as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "OperationId": {
+      "type": "string",
+      "pattern": "^op_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "PocketId": {
+      "type": "string",
+      "pattern": "^pkt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "ProviderKey": {
+      "description": "A provider key the index names. The key itself is only ever in the OS keychain.",
+      "type": "object",
+      "properties": {
+        "changed": {
+          "description": "When it was last added, rotated or revoked (RFC 3339, UTC).",
+          "type": "string"
+        },
+        "in_keychain": {
+          "description": "Whether the keychain holds it now.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The provider's name.",
+          "type": "string"
+        },
+        "state": {
+          "description": "`active` or `revoked`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "state",
+        "changed",
+        "in_keychain"
+      ]
+    },
+    "RequestId": {
+      "type": "string",
+      "pattern": "^req_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "RiskTier": {
+      "description": "Risk tier, 0 (lowest) to 3 (highest).",
+      "type": "integer",
+      "maximum": 3,
+      "minimum": 0
+    },
+    "Seq": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "SessionId": {
+      "type": "string",
+      "pattern": "^ses_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "Severity": {
+      "description": "Incident severity.",
+      "oneOf": [
+        {
+          "description": "Secret leak, RCE, data loss, budget runaway.",
+          "type": "string",
+          "const": "s1"
+        },
+        {
+          "description": "Durability, crash, provider cascade.",
+          "type": "string",
+          "const": "s2"
+        },
+        {
+          "description": "UX or performance degradation.",
+          "type": "string",
+          "const": "s3"
+        },
+        {
+          "description": "Expected, user-actionable condition (for example a policy denial).",
+          "type": "string",
+          "const": "info"
+        }
+      ]
+    },
+    "Sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "SideEffectClass": {
+      "description": "How far an Operation's effect reaches. Drives approval, journaling and honesty rules.",
+      "oneOf": [
+        {
+          "description": "No effect outside UAOS's own state.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "A local effect that can be reverted exactly (for example a config change with a\nrecorded previous snapshot).",
+          "type": "string",
+          "const": "local_reversible"
+        },
+        {
+          "description": "A local effect that cannot be reverted exactly (for example a deleted file).",
+          "type": "string",
+          "const": "local_irreversible"
+        },
+        {
+          "description": "An effect outside this machine: a provider call, a network request, a message sent.",
+          "type": "string",
+          "const": "external"
+        }
+      ]
+    },
+    "UaosError": {
+      "title": "uaos.error/1",
+      "description": "A UAOS-originated error. Never used to rewrite upstream provider errors.",
+      "type": "object",
+      "properties": {
+        "agent_message": {
+          "description": "Sanitized, actionable message for the agent. Never contains secrets or local paths.",
+          "type": "string"
+        },
+        "audit_id": {
+          "description": "Journal event that records this error.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "class": {
+          "description": "Root-cause class.",
+          "$ref": "#/$defs/ErrorClass"
+        },
+        "code": {
+          "description": "Registered code, e.g. `UAOS-BUDGET-0001`.",
+          "type": "string"
+        },
+        "correlation_id": {
+          "description": "Correlation identifier for `uaos trace`.",
+          "$ref": "#/$defs/CorrelationId"
+        },
+        "message_key": {
+          "description": "Localization key of the user-facing message.",
+          "type": "string"
+        },
+        "remediation": {
+          "description": "What to do about it.",
+          "type": "string"
+        },
+        "retryable": {
+          "description": "Whether retrying the same request can succeed.",
+          "type": "boolean"
+        },
+        "schema": {
+          "description": "Schema tag, always `uaos.error/1`.",
+          "$ref": "#/$defs/ErrorSchema"
+        },
+        "secret_leak_risk": {
+          "description": "Whether the condition implies a possible secret exposure.",
+          "type": "boolean"
+        },
+        "severity": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Severity"
+        }
+      },
+      "required": [
+        "schema",
+        "code",
+        "class",
+        "severity",
+        "retryable",
+        "message_key",
+        "agent_message",
+        "remediation",
+        "secret_leak_risk",
+        "correlation_id"
+      ]
+    },
+    "WallTime": {
+      "description": "RFC 3339 instant in UTC with a Z suffix.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    }
+  }
+}

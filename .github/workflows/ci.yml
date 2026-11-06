@@ -1,0 +1,274 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Merge fast lane. Every job here is registered in gates.toml; a gate that is not a job here cannot
+# be "active". Third-party actions are pinned by full commit SHA.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tool versions are pinned exactly: a floating "latest" once reformatted the cargo-vet store
+  # differently in CI than on developer machines. Bump deliberately, everywhere at once.
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      # Clippy with warnings denied, failing also on a clippy.toml ban whose path resolves to
+      # nothing (only a warning to clippy itself), then what rustc read for clippy's build.
+      - run: cargo xtask clippy
+      # What rustc read for each local crate in a dev and a release `cargo check` of every target
+      # with every feature.
+      - run: cargo xtask sources
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: cargo-nextest@0.9.148
+      - run: cargo nextest run --workspace --locked
+        env:
+          # Exercise the real OS credential store where a runner has one: Windows Credential Manager
+          # and macOS Keychain. Linux runners have no Secret Service daemon.
+          UAOS_TEST_OS_KEYCHAIN: ${{ matrix.os != 'ubuntu-latest' && '1' || '0' }}
+      - run: cargo test --doc --workspace --locked
+
+  arch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: cargo xtask arch-check
+      - run: cargo xtask allow-audit
+
+  schemas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: cargo xtask schema-check
+
+  headers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: cargo xtask headers
+      - run: cargo xtask claims
+
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: cargo xtask gates
+      - run: cargo xtask decisions
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check
+
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: cargo-vet@0.10.0
+      - run: cargo vet --locked
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo xtask vet-ratchet
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks && rm gitleaks.tar.gz
+      - run: ./gitleaks git --no-banner --redact --verbose .
+
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Commit range of this event
+        id: range
+        # pull_request, merge_group and pushes to main are all checked: a gate that only runs on
+        # pull requests can be skipped by pushing directly. A missing base fails closed rather than
+        # guessing a range.
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
+            push) base="$PUSH_BEFORE"; head="$PUSH_AFTER" ;;
+            *) echo "unsupported event: $EVENT" >&2; exit 1 ;;
+          esac
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit for $EVENT; refusing to guess a range" >&2
+            exit 1
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+      - run: cargo xtask dco "${{ steps.range.outputs.base }}..${{ steps.range.outputs.head }}"
+
+  docs-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Commit range of this event
+        id: range
+        # pull_request, merge_group and pushes to main are all checked: a gate that only runs on
+        # pull requests can be skipped by pushing directly. A missing base fails closed rather than
+        # guessing a range.
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
+            push) base="$PUSH_BEFORE"; head="$PUSH_AFTER" ;;
+            *) echo "unsupported event: $EVENT" >&2; exit 1 ;;
+          esac
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base commit for $EVENT; refusing to guess a range" >&2
+            exit 1
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+      - run: cargo xtask docs-sync "${{ steps.range.outputs.base }}...${{ steps.range.outputs.head }}"
+
+  paths:
+    # Founders and users have spaces and non-ASCII characters in their paths (`C:\BLUE SHOT`,
+    # Turkish usernames with ü/ş/ı). Build and test from such a path on every change.
+    #
+    # Build output goes to an ASCII directory: aws-lc-sys's prebuilt-NASM wrapper fails when the
+    # target directory contains characters the system ANSI code page cannot represent (ş and ı
+    # are not in code page 1252 used by this runner; Turkish Windows, code page 1254, is not
+    # affected). That is an upstream build limitation documented in CONTRIBUTING.md; the checkout
+    # itself — and therefore everything UAOS reads and writes relative to it — stays non-ASCII.
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: 'D:\uaos-target'
+    defaults:
+      run:
+        working-directory: "dir with space ü ş ı/uaos"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: "dir with space ü ş ı/uaos"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo test --workspace --locked
+
+  negative:
+    # Gate self-test: every active gate must fail on its seeded violation.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+        with:
+          tool: cargo-deny@0.20.2,cargo-vet@0.10.0
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf gitleaks.tar.gz gitleaks && sudo mv gitleaks /usr/local/bin/ && rm gitleaks.tar.gz
+      - run: cargo xtask negative --require-all-tools
+
+  merge-gate:
+    # The one check of this workflow that the ruleset on `main` requires. It needs every other job
+    # here; `cargo xtask gates` fails the merge if one is missing. It runs even when a needed job
+    # failed, was skipped or was cancelled, because GitHub counts a skipped required check as
+    # passing; it then fails unless every needed job succeeded.
+    if: always()
+    needs: [fmt, clippy, test, arch, schemas, headers, gates, deny, vet, secrets, dco, docs-sync, paths, negative]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every merge-lane job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        # Prints each needed job's result; exits non-zero unless there is at least one and every
+        # one is "success" (failure, cancelled and skipped all fail the gate).
+        run: |
+          python3 -c '
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          for job, outcome in sorted(needs.items()):
+              print(job + ": " + str(outcome.get("result")))
+          sys.exit(0 if needs and all(o.get("result") == "success" for o in needs.values()) else 1)
+          '

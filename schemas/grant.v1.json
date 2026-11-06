@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uaos.grant/1",
+  "description": "One grant entry: a time-bounded permission issued through an approval, or its revocation.",
+  "type": "object",
+  "properties": {
+    "op": {
+      "description": "What happened.",
+      "$ref": "#/$defs/GrantOp"
+    },
+    "schema": {
+      "description": "Schema tag, always `uaos.grant/1`.",
+      "$ref": "#/$defs/GrantSchema"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "op"
+  ],
+  "$defs": {
+    "ActionName": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.:]{1,64}$"
+    },
+    "ApprovalId": {
+      "type": "string",
+      "pattern": "^apr_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "CredentialId": {
+      "type": "string",
+      "pattern": "^cred_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "DataClass": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,128}$"
+    },
+    "GrantId": {
+      "type": "string",
+      "pattern": "^grt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "GrantName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,128}$"
+    },
+    "GrantOp": {
+      "description": "What a grant entry records.",
+      "oneOf": [
+        {
+          "description": "A grant was issued.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "issued"
+            },
+            "record": {
+              "description": "The new grant.",
+              "$ref": "#/$defs/GrantRecord"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "record"
+          ]
+        },
+        {
+          "description": "A grant was revoked before it expired.",
+          "type": "object",
+          "properties": {
+            "grant": {
+              "description": "The revoked grant.",
+              "$ref": "#/$defs/GrantId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "revoked"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "grant"
+          ]
+        }
+      ]
+    },
+    "GrantPrincipal": {
+      "description": "Who holds a grant.",
+      "oneOf": [
+        {
+          "description": "An agent authenticated with this credential.",
+          "type": "object",
+          "properties": {
+            "credential": {
+              "description": "The credential.",
+              "$ref": "#/$defs/CredentialId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "credential"
+          ]
+        },
+        {
+          "description": "A module, for the child Operations it requests.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "module"
+            },
+            "name": {
+              "description": "The module's name.",
+              "$ref": "#/$defs/ModuleName"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "A human, through a user-present channel. It has no other field, and one is refused.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "human"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The kernel itself. It has no other field, and one is refused.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "GrantRecord": {
+      "description": "One issued grant.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "What it allows: one of the engine's Cedar action names, such as `memory.read`. A record\nnaming another action does not reload, and boot skips it with an alarm.",
+          "$ref": "#/$defs/ActionName"
+        },
+        "approval": {
+          "description": "The approval that issued it.",
+          "$ref": "#/$defs/ApprovalId"
+        },
+        "approves": {
+          "description": "`@id`s of the ask policies the grant was issued to satisfy.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PolicyId"
+          },
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "data_classes": {
+          "description": "The data classes the approved content carried; a request with any other is not covered.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DataClass"
+          },
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "expires_at": {
+          "description": "From this instant on it no longer applies. The engine keeps whole milliseconds, so a\nfiner expiry floors: a reloaded grant ends early, never late.",
+          "$ref": "#/$defs/WallTime"
+        },
+        "id": {
+          "description": "Identifier (`grt_…`), shown in explanations as `grant:<id>`.",
+          "$ref": "#/$defs/GrantId"
+        },
+        "injection": {
+          "description": "For a cross-pocket `memory.read` only: what may happen to what is read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InjectionPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issued_at": {
+          "description": "When it was issued.",
+          "$ref": "#/$defs/WallTime"
+        },
+        "max_risk_tier": {
+          "description": "The highest risk tier the approval covered; a riskier request is not covered.",
+          "$ref": "#/$defs/RiskTier"
+        },
+        "pocket": {
+          "description": "The pocket it applies in: for `memory.read`, the pocket that reads.",
+          "$ref": "#/$defs/PocketId"
+        },
+        "principal": {
+          "description": "Who holds it.",
+          "$ref": "#/$defs/GrantPrincipal"
+        },
+        "resource": {
+          "description": "On what.",
+          "$ref": "#/$defs/GrantResource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "principal",
+        "action",
+        "resource",
+        "pocket",
+        "approval",
+        "issued_at",
+        "expires_at",
+        "max_risk_tier",
+        "data_classes",
+        "approves"
+      ]
+    },
+    "GrantResource": {
+      "description": "What a grant allows its action on.",
+      "oneOf": [
+        {
+          "description": "A model of a provider, by exact names.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "model"
+            },
+            "name": {
+              "description": "The model's name.",
+              "$ref": "#/$defs/GrantName"
+            },
+            "provider": {
+              "description": "The provider, e.g. `anthropic`.",
+              "$ref": "#/$defs/GrantName"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "provider",
+            "name"
+          ]
+        },
+        {
+          "description": "A tool, by exact name.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool"
+            },
+            "name": {
+              "description": "The tool's name.",
+              "$ref": "#/$defs/GrantName"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "A budget pool.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "The pool.",
+              "$ref": "#/$defs/PoolId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "pool"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "description": "A configuration key, by exact name.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "config_key"
+            },
+            "name": {
+              "description": "The key.",
+              "$ref": "#/$defs/GrantName"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "A pocket, for `memory.read`: another pocket (a cross-pocket read, which needs consent), or\nthe reading pocket itself (behind an ask).",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "The pocket whose memory may be read.",
+              "$ref": "#/$defs/PocketId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "pocket"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ]
+        }
+      ]
+    },
+    "GrantSchema": {
+      "description": "Schema tag of the grant contract.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.grant/1"
+        }
+      ]
+    },
+    "InjectionPolicy": {
+      "description": "What may happen to memory read under a cross-pocket grant.",
+      "oneOf": [
+        {
+          "description": "It may be appended to the newest human turn as it arrives, labelled with its provenance.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "It is held for the human, and appended only once they accept it.",
+          "type": "string",
+          "const": "ask"
+        },
+        {
+          "description": "It may inform ranking but never enters a prompt.",
+          "type": "string",
+          "const": "never"
+        }
+      ]
+    },
+    "ModuleName": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "PocketId": {
+      "type": "string",
+      "pattern": "^pkt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "PolicyId": {
+      "type": "string",
+      "allOf": [
+        {
+          "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+        },
+        {
+          "not": {
+            "pattern": "^grant:"
+          }
+        }
+      ]
+    },
+    "PoolId": {
+      "type": "string",
+      "pattern": "^pool_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "RiskTier": {
+      "description": "Risk tier, 0 (lowest) to 3 (highest).",
+      "type": "integer",
+      "maximum": 3,
+      "minimum": 0
+    },
+    "WallTime": {
+      "description": "RFC 3339 instant in UTC with a Z suffix.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    }
+  }
+}

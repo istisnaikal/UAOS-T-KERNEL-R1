@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos-json"
+description = "UAOS structural JSON tokenizer: one fail-closed pass over a buffered body into a bounded tape of spans, keys and lazily decoded strings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+memchr.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The differential oracle: serde_json, read through a serde visitor that refuses duplicate keys.
+# Dev-dependencies only; arch.toml bans serde_json from the product graph.
+serde.workspace = true
+serde_json.workspace = true
+
+[[bench]]
+name = "tape"
+harness = false
+
+[lints]
+workspace = true

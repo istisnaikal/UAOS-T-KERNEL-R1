@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uaos.event/1",
+  "description": "One UAOS journal record (metadata only).",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "description": "Who caused it.",
+      "$ref": "#/$defs/Actor"
+    },
+    "agent_id": {
+      "description": "The agent instance that caused the event, if known. Absent, it is not written, so records\nwithout it keep exactly the bytes they had before the field existed.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "compensable": {
+      "description": "Whether the related effect can be undone by a compensating action.",
+      "type": "boolean"
+    },
+    "config_version": {
+      "description": "Configuration snapshot in force.",
+      "$ref": "#/$defs/ConfigVersion"
+    },
+    "correlation_id": {
+      "description": "Correlation identifier tying together one user-visible action.",
+      "$ref": "#/$defs/CorrelationId"
+    },
+    "cost_estimate": {
+      "description": "Estimated cost attributed to this event, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NanoUsd"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "durability": {
+      "description": "Durability class this record was written with.",
+      "$ref": "#/$defs/Durability"
+    },
+    "id": {
+      "description": "Unique event identifier.",
+      "$ref": "#/$defs/EventId"
+    },
+    "metadata": {
+      "description": "Bounded labels.",
+      "$ref": "#/$defs/Metadata"
+    },
+    "operation_id": {
+      "description": "Operation the event belongs to, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OperationId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parent_id": {
+      "description": "Causing event, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_inline": {
+      "description": "Small metadata-only payload.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InlinePayload"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_ref": {
+      "description": "Keyed reference to an encrypted content chunk, if the event has content.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ChunkRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pocket_id": {
+      "description": "Pocket the event belongs to, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PocketId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prev_hash": {
+      "description": "Chain link: SHA-256 of the previous line's exact bytes.",
+      "$ref": "#/$defs/Sha256Digest"
+    },
+    "request_id": {
+      "description": "Ingress request that caused the event, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "risk_tier": {
+      "description": "Risk tier of the related Operation.",
+      "$ref": "#/$defs/RiskTier"
+    },
+    "schema": {
+      "description": "Schema tag, always `uaos.event/1`.",
+      "$ref": "#/$defs/EventSchema"
+    },
+    "seq": {
+      "description": "Position in the journal: previous `seq` + 1, starting at 0.",
+      "$ref": "#/$defs/Seq"
+    },
+    "session_id": {
+      "description": "Session the event belongs to, if any.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "side_effect_class": {
+      "description": "How far the related effect reaches.",
+      "$ref": "#/$defs/SideEffectClass"
+    },
+    "ts": {
+      "description": "When it happened.",
+      "$ref": "#/$defs/EventTime"
+    },
+    "type": {
+      "description": "Namespaced type, e.g. `op.reserved_intent`.",
+      "$ref": "#/$defs/EventType"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "seq",
+    "ts",
+    "correlation_id",
+    "actor",
+    "type",
+    "compensable",
+    "side_effect_class",
+    "risk_tier",
+    "durability",
+    "config_version",
+    "prev_hash"
+  ],
+  "$defs": {
+    "Actor": {
+      "description": "Who caused an event.",
+      "oneOf": [
+        {
+          "description": "A human acting through an authenticated, user-present channel.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "human"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "An agent authenticated with a UAOS-issued credential.",
+          "type": "object",
+          "properties": {
+            "credential": {
+              "description": "The credential used.",
+              "$ref": "#/$defs/CredentialId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "required": [
+            "kind",
+            "credential"
+          ]
+        },
+        {
+          "description": "A module acting under its granted capabilities.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "module"
+            },
+            "name": {
+              "description": "The module's name.",
+              "$ref": "#/$defs/ModuleName"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "The kernel itself (recovery, reconciliation, scheduled maintenance).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "AgentId": {
+      "type": "string",
+      "pattern": "^agt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "ChunkRef": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$"
+    },
+    "ConfigVersion": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "CorrelationId": {
+      "type": "string",
+      "pattern": "^cor_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "CredentialId": {
+      "type": "string",
+      "pattern": "^cred_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "Durability": {
+      "description": "When the event must reach the OS relative to its acknowledgement.",
+      "oneOf": [
+        {
+          "description": "Handed to the OS before the acknowledgement: survives kill -9. Power-loss durability\nfollows the configured fsync policy (group commit within W ms, or strict).",
+          "type": "string",
+          "const": "critical"
+        },
+        {
+          "description": "Batched; may be lost on process crash within the documented window.",
+          "type": "string",
+          "const": "standard"
+        }
+      ]
+    },
+    "EventId": {
+      "type": "string",
+      "pattern": "^evt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "EventSchema": {
+      "description": "Schema tag of the envelope.",
+      "oneOf": [
+        {
+          "description": "Version 1.",
+          "type": "string",
+          "const": "uaos.event/1"
+        }
+      ]
+    },
+    "EventTime": {
+      "description": "When an event happened: wall time for humans and cross-process ordering, monotonic time\nfor durations and ordering within one process run (wall clocks can jump).",
+      "type": "object",
+      "properties": {
+        "mono_ns": {
+          "description": "Monotonic reading in nanoseconds since the process's clock origin.",
+          "$ref": "#/$defs/MonoNanos"
+        },
+        "wall": {
+          "description": "Wall-clock instant in UTC.",
+          "$ref": "#/$defs/WallTime"
+        }
+      },
+      "required": [
+        "wall",
+        "mono_ns"
+      ]
+    },
+    "EventType": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "InlinePayload": {
+      "description": "Metadata-only JSON value, at most 1024 bytes when serialized."
+    },
+    "Metadata": {
+      "description": "Bounded labels, never content. Keys and values are limited in BYTES (UTF-8); the maxLength below is the matching character bound for ASCII.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[a-z0-9_.-]{1,64}$"
+      }
+    },
+    "ModuleName": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "MonoNanos": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "NanoUsd": {
+      "description": "Signed amount in nano-US-dollars (1e-9 USD) as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "OperationId": {
+      "type": "string",
+      "pattern": "^op_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "PocketId": {
+      "type": "string",
+      "pattern": "^pkt_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "RequestId": {
+      "type": "string",
+      "pattern": "^req_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "RiskTier": {
+      "description": "Risk tier, 0 (lowest) to 3 (highest).",
+      "type": "integer",
+      "maximum": 3,
+      "minimum": 0
+    },
+    "Seq": {
+      "description": "Unsigned 64-bit integer as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "SessionId": {
+      "type": "string",
+      "pattern": "^ses_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "Sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "SideEffectClass": {
+      "description": "How far an Operation's effect reaches. Drives approval, journaling and honesty rules.",
+      "oneOf": [
+        {
+          "description": "No effect outside UAOS's own state.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "A local effect that can be reverted exactly (for example a config change with a\nrecorded previous snapshot).",
+          "type": "string",
+          "const": "local_reversible"
+        },
+        {
+          "description": "A local effect that cannot be reverted exactly (for example a deleted file).",
+          "type": "string",
+          "const": "local_irreversible"
+        },
+        {
+          "description": "An effect outside this machine: a provider call, a network request, a message sent.",
+          "type": "string",
+          "const": "external"
+        }
+      ]
+    },
+    "WallTime": {
+      "description": "RFC 3339 instant in UTC with a Z suffix.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    }
+  }
+}

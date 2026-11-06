@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos-runtime"
+description = "UAOS runtime: the kernel stop, admission by bytes in flight, the pinned configuration snapshot, declared pricing, the metered stream relay and boot recovery. Its supervisor is the only spawner."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+http.workspace = true
+# Body and executor traits only; the runtime opens no socket (the door does).
+hyper.workspace = true
+memchr.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+uaos-contracts.workspace = true
+uaos-json.workspace = true
+uaos-ledger.workspace = true
+uaos-module-api.workspace = true
+# The platform clock the state actor's flush schedule runs on (state.rs).
+uaos-platform.workspace = true
+# Redaction on the tape and the final scan, the pipeline's detect and scan stages. Never
+# `uaos-redact-scan` directly (arch.toml).
+uaos-redact.workspace = true
+uaos-state.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
+uaos-platform.workspace = true
+
+[[bench]]
+name = "relay"
+harness = false
+
+[[bench]]
+name = "boot"
+harness = false
+
+[[bench]]
+name = "state_actor"
+harness = false
+
+[lints]
+workspace = true

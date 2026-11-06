@@ -1,0 +1,7 @@
+UAOS
+Copyright 2026 The UAOS Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Notices for third-party components included in binary releases are generated from the
+dependency graph at release time (see RELEASING.md, "Notices") and shipped with every artifact.

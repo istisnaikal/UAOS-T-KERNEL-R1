@@ -1,0 +1,11 @@
+# Build output anywhere in the tree (workspace and detached spike crates).
+target/
+**/*.rs.bk
+*.profraw
+.DS_Store
+/.idea/
+/.vscode/
+# cargo-fuzz output (nightly fuzz job): arbitrary bytes, never committed.
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos-policy"
+description = "UAOS reference monitor: Cedar authorization with fail-closed semantics, Ask effect, time-bounded grants and explanations. Pure and synchronous."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+cedar-policy.workspace = true
+thiserror.workspace = true
+uaos-contracts.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[[bench]]
+name = "authorize"
+harness = false
+
+[lints]
+workspace = true

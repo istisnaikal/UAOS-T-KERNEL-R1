@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Adapter drift
+description: A provider or client changed its wire behaviour and UAOS no longer passes it through faithfully.
+labels: [adapter-drift, needs-triage]
+body:
+  - type: input
+    id: dialect
+    attributes:
+      label: Dialect and client (e.g. Anthropic Messages / Claude Code 2.x)
+    validations:
+      required: true
+  - type: textarea
+    id: diff
+    attributes:
+      label: Expected vs observed (sanitized request/response excerpts)
+    validations:
+      required: true

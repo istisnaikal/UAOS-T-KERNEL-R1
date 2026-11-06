@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Allowed dependency edges. `cargo xtask arch-check` fails the merge when:
+#   * a workspace crate is not declared here,
+#   * a crate depends (normal or build) on a workspace crate not in its `allow` list,
+#   * a crate's transitive dependency closure contains a crate in its `ban` list,
+#   * a crate under modules/ (Ring 1) depends on any workspace crate other than
+#     uaos-contracts and uaos-module-api.
+# Dev-dependencies are not edges of the product graph and are not checked here.
+
+[ring1]
+allow = ["uaos-contracts", "uaos-module-api"]
+# No Ring 1 module may reach a network, process or async-I/O crate, even transitively: a module's
+# effects are child Operations through the kernel's one door.
+ban = [
+  "tokio", "hyper", "hyper-util", "reqwest", "mio", "socket2",
+  "rustls", "tokio-rustls", "uaos-egress",
+]
+
+[crate.uaos-contracts]
+ring = 0
+allow = []
+ban = ["tokio", "hyper", "reqwest", "rusqlite", "mio", "socket2"]
+# The final scan's crate reaches this one, so its build is pinned too: a build script or a feature
+# here would put code into the final scan's build as surely (over the closing fixes).
+pinned = ["jiff", "schemars", "serde", "serde_json", "thiserror", "uuid"]
+
+[crate.uaos-platform]
+ring = 0
+allow = ["uaos-contracts"]
+ban = ["tokio", "hyper", "reqwest"]
+
+[crate.uaos-state]
+ring = 0
+allow = ["uaos-contracts", "uaos-platform"]
+ban = ["hyper", "reqwest"]
+
+[crate.uaos-identity]
+ring = 0
+allow = ["uaos-contracts", "uaos-platform", "uaos-state"]
+ban = ["hyper", "reqwest"]
+
+[crate.uaos-policy]
+ring = 0
+allow = ["uaos-contracts"]
+ban = ["tokio", "hyper", "reqwest", "rusqlite"]
+
+[crate.uaos-ledger]
+ring = 0
+allow = ["uaos-contracts", "uaos-state"]
+ban = ["hyper", "reqwest"]
+
+[crate.uaos-json]
+ring = 0
+# The one structural tokenizer: pure, no workspace edge, no I/O. serde_json is its differential
+# oracle, a dev-dependency only; banning it from the product graph keeps the oracle independent of
+# the code it checks.
+allow = []
+ban = [
+  "tokio", "hyper", "hyper-util", "reqwest", "mio", "socket2",
+  "rustls", "tokio-rustls", "rusqlite", "uaos-egress", "serde_json",
+]
+
+[crate.uaos-redact]
+ring = 0
+allow = ["uaos-contracts", "uaos-platform", "uaos-json", "uaos-redact-scan"]
+ban = ["tokio", "hyper", "reqwest", "rusqlite"]
+# Its identity pins name the scan crate as `::uaos_redact_scan`. While that name is passed to rustc
+# as a dependency, rustc refuses a macro that would give it to another crate.
+require = ["uaos-redact-scan"]
+
+[crate.uaos-redact-scan]
+ring = 0
+# The final scan and the detection it shares with redaction. It may never reach the shared
+# tokenizer, so a fault there cannot hide a secret from both redaction and the final scan: no edge
+# to uaos-json, and uaos-json banned from its whole closure.
+allow = ["uaos-contracts"]
+ban = ["uaos-json", "tokio", "hyper", "reqwest", "rusqlite"]
+# Its own tests may not build on the tape either, through any dev-dependency. That covers the tests
+# in this crate: the detectors' and the string tokenizer's. The final scan's own tests live in
+# uaos-redact's, which link uaos-json; their independence is review only. Its doctests are off:
+# rustdoc builds them outside the dep-info check, and arch-check requires that of every crate with a
+# dev_ban.
+dev_ban = ["uaos-json"]
+# Its build is pinned: these are its only normal and build dependencies, and it has no build script
+# and no features. A build script, or a build-dependency's file APIs, which no clippy ban names,
+# could copy the tokenizer into its OUT_DIR; a feature would make a build no gate checks. A new
+# dependency here is an architecture change.
+pinned = ["aho-corasick", "memchr", "thiserror", "uaos-contracts"]
+
+[crate.uaos-module-api]
+ring = 0
+allow = ["uaos-contracts", "uaos-json"]
+# The socket modules plug into carries no I/O of its own.
+ban = ["tokio", "hyper", "hyper-util", "reqwest", "mio", "socket2", "rustls", "tokio-rustls", "rusqlite", "uaos-egress"]
+
+[crate.uaos-egress]
+ring = 0
+allow = ["uaos-contracts", "uaos-platform", "uaos-policy"]
+ban = ["rusqlite"]
+
+[crate.uaos-runtime]
+ring = 0
+allow = [
+  "uaos-contracts", "uaos-platform", "uaos-state", "uaos-identity", "uaos-policy",
+  "uaos-ledger", "uaos-redact", "uaos-module-api", "uaos-egress", "uaos-json",
+]
+ban = []
+
+[crate.uaos]
+ring = 0
+# Composition root: wires the kernel. Its list is explicit and leaves out `uaos-egress`, so the
+# bin can never name the door: network use from the CLI is a runtime Operation like any other.
+# The bin still reaches the egress crate through `uaos-runtime`, by design, so the exclusion is
+# the allow list and not a transitive ban.
+allow = [
+  "uaos-contracts", "uaos-platform", "uaos-state", "uaos-identity", "uaos-policy",
+  "uaos-ledger", "uaos-redact", "uaos-module-api", "uaos-runtime",
+]
+ban = []
+
+[crate.uaos-testkit]
+ring = "dev"
+allow = ["*"]
+ban = []
+
+[crate.xtask]
+ring = "tool"
+allow = ["uaos-contracts"]
+ban = []
+
+# Where guarded lints may be switched off (`cargo xtask allow-audit`). Each key is a lint; each
+# value lists owner paths. A pattern is a path prefix, and a `*` segment matches exactly one
+# segment. An `#[allow]` or `#[expect]` of the lint anywhere else fails the merge. Adding an owner
+# is an architecture change and needs review.
+[allow_audit]
+# Empty until adds `crates/uaos-platform/src/os/` with the first unsafe code.
+"unsafe_code" = []
+"clippy::disallowed_methods" = [
+    "crates/uaos-platform/src/real", # owner of clocks, randomness and the filesystem
+    "crates/uaos-egress/src/connect.rs", # owner of outbound sockets: the one door
+    "crates/uaos-egress/src/resolve.rs", # owner of outbound name resolution
+    "crates/uaos-runtime/src/supervisor.rs", # owner of spawning: the runtime's only spawner
+    "crates/*/tests/",
+    "crates/*/benches/",
+    "crates/uaos-testkit/", # dev-only harnesses that need real processes and real time
+    "xtask/",
+]
+"clippy::disallowed_types" = [
+    "crates/uaos-policy/src/engine.rs", # Cedar's entity API takes a HashSet of parents
+    "crates/uaos-egress/tests/", # the door's harness runs mock servers on hyper-util's executor; its canaries name every banned type
+    "crates/uaos-platform/tests/bans.rs", # the canary for the entropy type
+]

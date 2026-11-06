@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Feature or cell change
+description: Propose behaviour tied to a pain, a cell and a measurable outcome.
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: pain
+    attributes:
+      label: Pain
+    validations:
+      required: true
+  - type: input
+    id: cell
+    attributes:
+      label: Crate or kernel invariant
+    validations:
+      required: true
+  - type: textarea
+    id: metric
+    attributes:
+      label: Which metric moves, and how would we measure it?
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risks and nearest red line

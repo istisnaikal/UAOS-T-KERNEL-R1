@@ -1,0 +1,173 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Architecture is enforced here, not in review comments. Each ban names the ONE crate allowed to
+# cross it. Inside that crate the crossing must be an item-level
+# `#[allow(clippy::disallowed_methods, reason = "...")]`. `cargo xtask allow-audit` checks owners
+# per lint, not per method: a file that owns one disallowed method may allow any of them. Review of
+# each `allow` and its reason covers the rest. Paths for crates that are not dependencies yet
+# (reqwest) are added in the phase that introduces them. Clippy only warns about a path that
+# resolves to nothing, and `-D warnings` does not make that fatal, so the gate runs as
+# `cargo xtask clippy`, which fails on it. Some broken paths draw no warning at all (a first segment
+# that names no crate, or an `allow-invalid` entry, which exists only on some systems), so every ban
+# here also has a canary in `crates/uaos-egress/tests/bans.rs` (or `uaos-platform`'s): a call under
+# `#[expect]` that fails clippy wherever the ban stops firing.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+
+disallowed-methods = [
+  # Time and randomness come from uaos_platform::{Clock, Rng} so DST is seed-reproducible.
+  { path = "std::time::SystemTime::now", reason = "use uaos_platform::Clock (owner: uaos-platform)" },
+  { path = "std::time::Instant::now", reason = "use uaos_platform::Clock (owner: uaos-platform)" },
+  { path = "getrandom::fill_uninit", reason = "randomness comes from uaos_platform::Rng (owner: uaos-platform)" },
+  { path = "getrandom::u32", reason = "randomness comes from uaos_platform::Rng (owner: uaos-platform)" },
+  { path = "getrandom::u64", reason = "randomness comes from uaos_platform::Rng (owner: uaos-platform)" },
+  { path = "getrandom::fill", reason = "use uaos_platform::Rng (owner: uaos-platform)" },
+  # Concurrency: the supervisor is the sole spawner.
+  { path = "std::thread::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  # Processes: only through the platform spawner / sandbox broker.
+  { path = "std::process::Command::new", reason = "spawn via uaos_platform::Spawn (owner: uaos-platform)" },
+  # Filesystem: only through uaos_platform::Fs so faults can be injected.
+  { path = "std::fs::write", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::read", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::read_to_string", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::remove_file", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::rename", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::create_dir_all", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::File::create", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::File::open", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::OpenOptions::open", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  # Every other file-system and path query or change. On Windows a UNC path (`\\host\share`)
+  # resolves the host and opens SMB to it, so these are also network entry points that need no
+  # dependency.
+  { path = "std::fs::metadata", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::symlink_metadata", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::read_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::copy", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::hard_link", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::read_link", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::canonicalize", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::create_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::remove_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::remove_dir_all", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::set_permissions", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::exists", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::File::create_new", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::fs::DirBuilder::create", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::exists", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::try_exists", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::metadata", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::symlink_metadata", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::read_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::canonicalize", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::read_link", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::is_file", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::is_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::path::Path::is_symlink", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::env::set_current_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  # Links and ownership changes (a Windows symbolic link to a UNC target reaches the network; the
+  # others exist only on Unix).
+  { path = "std::fs::soft_link", reason = "use uaos_platform::Fs (owner: uaos-platform)" },
+  { path = "std::os::windows::fs::symlink_file", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  { path = "std::os::windows::fs::symlink_dir", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  { path = "std::os::unix::fs::symlink", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  { path = "std::os::unix::fs::chown", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  { path = "std::os::unix::fs::lchown", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  { path = "std::os::unix::fs::chroot", reason = "use uaos_platform::Fs (owner: uaos-platform)", allow-invalid = true },
+  # Network: only the egress door opens connections or resolves names.
+  { path = "std::net::TcpStream::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)" },
+  { path = "std::net::TcpStream::connect_timeout", reason = "outbound connections go through the egress door (owner: uaos-egress)" },
+  { path = "std::net::UdpSocket::bind", reason = "UAOS sends no UDP; the egress door is the only outbound path (owner: uaos-egress)" },
+  { path = "tokio::net::TcpStream::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)" },
+  { path = "tokio::net::lookup_host", reason = "name resolution belongs to the egress door, which classifies every answer (owner: uaos-egress)" },
+  # The other ordinary ways to resolve, connect, send UDP or build a client. `to_socket_addrs` needs
+  # no dependency at all, so without this ban any crate, Ring 1 included, could leak data through
+  # DNS query names.
+  { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "name resolution belongs to the egress door, which classifies every answer (owner: uaos-egress)" },
+  { path = "tokio::net::TcpSocket::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)" },
+  { path = "tokio::net::UdpSocket::bind", reason = "UAOS sends no UDP; the egress door is the only outbound path (owner: uaos-egress)" },
+  { path = "hyper_util::client::legacy::connect::HttpConnector::new", reason = "the egress door is the only HTTP client; it owns DNS and classification (owner: uaos-egress)" },
+  { path = "hyper_util::client::legacy::Builder::build_http", reason = "the egress door is the only HTTP client; it owns DNS and classification (owner: uaos-egress)" },
+  { path = "hyper_util::client::legacy::connect::HttpConnector::new_with_resolver", reason = "the egress door is the only HTTP client; it owns DNS and classification (owner: uaos-egress)" },
+  # Hyper-util's own resolver (a DNS lookup on the blocking pool), a raw socket's listen, and the
+  # other Unix-socket and named-pipe connects.
+  { path = "hyper_util::client::legacy::connect::dns::GaiResolver::new", reason = "name resolution belongs to the egress door, which classifies every answer (owner: uaos-egress)" },
+  { path = "tokio::net::TcpSocket::listen", reason = "only the API crate listens, on loopback (owner: uaos-api)" },
+  { path = "tokio::net::UnixSocket::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixStream::connect_addr", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::windows::named_pipe::ClientOptions::open", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixStream::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixStream::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  # The remaining local-IPC sockets (Unix streams by address, Unix datagrams, std's needing no
+  # dependency at all) and the local listeners (Unix listeners and Windows pipe servers).
+  # `crates/uaos-egress/tests/bans.rs` proves each fires where it exists.
+  { path = "tokio::net::UnixStream::connect_addr", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixSocket::datagram", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::bind", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::unbound", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::send_to", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::bind", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::bind_addr", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::unbound", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::connect", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::connect_addr", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::send_to", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixDatagram::send_to_addr", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixListener::bind", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  { path = "tokio::net::UnixListener::bind_addr", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  { path = "tokio::net::UnixSocket::listen", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixListener::bind", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  { path = "std::os::unix::net::UnixListener::bind_addr", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::pair", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::from_std", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::try_send_to", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::UnixDatagram::poll_send_to", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::unix::pipe::OpenOptions::open_sender", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::unix::pipe::OpenOptions::open_receiver", reason = "outbound connections go through the egress door (owner: uaos-egress)", allow-invalid = true },
+  { path = "tokio::net::windows::named_pipe::ServerOptions::create", reason = "only the API crate listens, on loopback (owner: uaos-api)", allow-invalid = true },
+  # Binding a listener opens a network handle, and `bind` with a name resolves it, a DNS leak that
+  # needs no dependency. Only the API crate listens.
+  { path = "std::net::TcpListener::bind", reason = "only the API crate listens, on loopback (owner: uaos-api)" },
+  { path = "tokio::net::TcpListener::bind", reason = "only the API crate listens, on loopback (owner: uaos-api)" },
+  # Tasks: the runtime supervisor is the only spawner.
+  { path = "tokio::task::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::spawn_blocking", reason = "CPU work runs on the supervisor's bounded pool (owner: uaos-runtime)" },
+  { path = "tokio::task::spawn_local", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::runtime::Handle::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::runtime::Handle::spawn_blocking", reason = "CPU work runs on the supervisor's bounded pool (owner: uaos-runtime)" },
+  { path = "tokio::runtime::Runtime::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::runtime::Runtime::spawn_blocking", reason = "CPU work runs on the supervisor's bounded pool (owner: uaos-runtime)" },
+  { path = "std::thread::Builder::spawn", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "std::thread::scope", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn_blocking", reason = "CPU work runs on the supervisor's bounded pool (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn_on", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn_local", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn_local_on", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::JoinSet::spawn_blocking_on", reason = "CPU work runs on the supervisor's bounded pool (owner: uaos-runtime)" },
+  { path = "tokio::task::LocalSet::spawn_local", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  # Channels: every one is bounded and sized to admission. No owner.
+  { path = "tokio::sync::mpsc::unbounded_channel", reason = "every channel is bounded; no crate owns an unbounded one" },
+  { path = "std::sync::mpsc::channel", reason = "every channel is bounded; use a bounded channel" },
+  # The door: built in one place and handed only to the runtime (where).
+  { path = "uaos_egress::Door::new", reason = "the one door is built in one place and handed only to the runtime" },
+  # Hidden inputs: configuration arrives through uaos-config snapshots, not ambient env reads.
+  { path = "std::env::var", reason = "read config via the composition root (owner: uaos bin)" },
+  { path = "std::env::var_os", reason = "read config via the composition root (owner: uaos bin)" },
+]
+
+disallowed-types = [
+  # Random iteration order is hidden nondeterminism; it breaks seed-reproducible simulation.
+  { path = "std::collections::HashMap", reason = "use BTreeMap (deterministic order) or justify with #[allow]" },
+  { path = "std::collections::HashSet", reason = "use BTreeSet (deterministic order) or justify with #[allow]" },
+  # Task sets spawn through `collect` and `extend` too, which no method ban can name.
+  { path = "tokio::task::JoinSet", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  { path = "tokio::task::LocalSet", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+  # hyper-util's executor spawns every task it is given with `tokio::spawn`.
+  { path = "getrandom::SysRng", reason = "randomness comes from uaos_platform::Rng (owner: uaos-platform)" },
+  { path = "hyper_util::rt::TokioExecutor", reason = "spawn via the runtime supervisor (owner: uaos-runtime)" },
+]

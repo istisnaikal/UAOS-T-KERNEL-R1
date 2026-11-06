@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "uaos"
+description = "UAOS: the single binary and composition root. Init and the configuration, with fixed exit codes and a versioned --json output."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "uaos"
+path = "src/main.rs"
+# The library has the same name; its docs are the crate's.
+doc = false
+
+# No `uaos-egress`, ever: the binary never names the door (arch.toml).
+[dependencies]
+serde_json.workspace = true
+toml.workspace = true
+uaos-contracts.workspace = true
+uaos-identity.workspace = true
+uaos-platform.workspace = true
+uaos-redact.workspace = true
+uaos-runtime.workspace = true
+uaos-state.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

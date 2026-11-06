@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Dependency updates arrive as PRs and pass the same gates (deny, vet, tests) as any change.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Every `github/codeql-action` step must run one version: a PR that bumps `init` alone
+      # or `analyze` alone fails CodeQL (#36, #37).
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# UAOS workspace. The kernel crates live in crates/. Dependency direction is enforced by
+# `cargo xtask arch-check` against arch.toml.
+
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+# The fuzz workspace is its own workspace with its own lockfile and is never built here.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+authors = ["The UAOS Authors"]
+publish = false
+
+[workspace.dependencies]
+# Internal
+uaos-contracts = { path = "crates/uaos-contracts" }
+uaos-identity = { path = "crates/uaos-identity" }
+uaos-json = { path = "crates/uaos-json" }
+uaos-ledger = { path = "crates/uaos-ledger" }
+uaos-module-api = { path = "crates/uaos-module-api" }
+uaos-platform = { path = "crates/uaos-platform" }
+uaos-policy = { path = "crates/uaos-policy" }
+uaos-redact = { path = "crates/uaos-redact" }
+uaos-redact-scan = { path = "crates/uaos-redact-scan" }
+uaos-runtime = { path = "crates/uaos-runtime" }
+uaos-state = { path = "crates/uaos-state" }
+uaos-egress = { path = "crates/uaos-egress" }
+
+# External — every addition needs a justification in the PR (CONTRIBUTING.md §Dependencies). Async
+# and HTTP stack. tokio with only the features each crate asks for; hyper 1 and hyper-util directly:
+# no reqwest or axum, whose redirects and pooling are hidden policy.
+bytes = "1.12.1"
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", default-features = false }
+hyper-util = { version = "0.1.21", default-features = false }
+tokio = { version = "1.53.2", default-features = false }
+tower-service = "0.3.3"
+# TLS on aws-lc-rs only. Certificates are verified by rustls against the roots in the operating
+# system's store, read locally; nothing is fetched during a handshake.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-native-certs = "0.8.5"
+rustls-pki-types = "1.15.1"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+# Dev only: a throwaway certificate authority for the loopback TLS mock in tests.
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+# aws-lc-rs: the single audited crypto family for TLS and primitives.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys", "alloc"] }
+# Multi-literal search for redaction anchors and known vault secrets (already shipped via regex).
+aho-corasick = "1.1.5"
+# SIMD byte search for the JSON string tokenizer (already shipped via aho-corasick).
+memchr = "2.8.3"
+cargo_metadata = "0.23.1"
+# xtask reads target roots with a real parser.
+syn = { version = "2.0.119", default-features = false, features = ["full", "parsing"] }
+# Authorization: formally specified, schema-validated, Apache-2.0. No optional extensions.
+cedar-policy = { version = "4.13.0", default-features = false }
+getrandom = "0.4.3"
+# OS keychains: core API plus one store per platform, passed explicitly (no global store).
+keyring-core = "1.0.1"
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+# Pure-Rust D-Bus and crypto: no libdbus, no OpenSSL, no tokio in uaos-platform.
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-async-io-crypto-rust"] }
+jiff = { version = "0.2.38", default-features = false, features = ["std", "serde"] }
+proptest = "1.12.0"
+# SQLite compiled from pinned source: projections must not depend on a system library.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+toml = "1.1.8"
+uuid = { version = "1.28.0", default-features = false, features = ["std", "serde"] }
+zeroize = "1.9.1"
+
+[workspace.lints.rust]
+# `unsafe` is denied everywhere; the only escape hatch is `#[allow(unsafe_code)]` inside
+# `uaos-platform::os`, with a design record and a SAFETY comment per block.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Restriction set. CI runs clippy with `-D warnings`, so every warning blocks a merge.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+as_conversions = "deny"
+let_underscore_must_use = "deny"
+let_underscore_future = "deny"
+undocumented_unsafe_blocks = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+exit = "deny"
+mem_forget = "deny"
+allow_attributes_without_reason = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "unwind" # module boundaries catch panics; never abort silently.
+
+# The distributed release artifacts: fat LTO makes the stripped binary 8.9% smaller, with start
+# times within noise. `release` stays thin for everyday and CI builds, whose links it keeps short.
+[profile.dist]
+inherits = "release"
+lto = "fat"

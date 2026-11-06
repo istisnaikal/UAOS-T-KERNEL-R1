@@ -1,0 +1,1205 @@
+
+# cargo-vet config file
+
+[cargo-vet]
+version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.aes]]
+version = "0.9.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.aho-corasick]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.android_system_properties]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.apple-native-keyring-store]]
+version = "1.0.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ar_archive_writer]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.arrayvec]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ascii-canvas]]
+version = "4.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.asn1-rs]]
+version = "0.7.2"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.asn1-rs-derive]]
+version = "0.6.0"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.asn1-rs-impl]]
+version = "0.2.0"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.async-broadcast]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-channel]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-executor]]
+version = "1.14.1"
+criteria = "safe-to-deploy"
+notes = "1.14.0 was yanked upstream for a use-after-free when a Waker fires during Executor::drop, and cargo deny refuses yanked crates. Reached only through the Linux keychain: uaos-platform -> zbus-secret-service-keyring-store -> secret-service -> zbus 5. No imported audit covers 1.14.0 -> 1.14.1 yet. The delta was read in full on 2026-11-05 by the maintainer's AI assistant, which is not a human audit: spawn_inner and schedule take the executor's state as an Arc again (state_as_arc), so the schedule closure is 'static and no longer borrows state a dropped executor frees; StaticExecutor::leak reads the state pointer through state_ptr; rust-version goes back to 1.63. The change is in unsafe code. Crate checksum matches Cargo.lock. Replace with an imported audit when one exists."
+
+[[exemptions.async-io]]
+version = "2.6.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-lock]]
+version = "3.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-process]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-recursion]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-signal]]
+version = "0.2.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.async-trait]]
+version = "0.1.92"
+criteria = "safe-to-deploy"
+
+[[exemptions.autocfg]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.aws-lc-rs]]
+version = "1.18.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.aws-lc-sys]]
+version = "0.46.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.base64]]
+version = "0.23.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.bitflags]]
+version = "2.13.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.block-buffer]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.block-padding]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.blocking]]
+version = "1.7.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.borsh]]
+version = "1.8.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.borsh-derive]]
+version = "1.8.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.bs58]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.bumpalo]]
+version = "3.20.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.bytes]]
+version = "1.12.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cargo-platform]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.cargo_metadata]]
+version = "0.23.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cbc]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cc]]
+version = "1.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.cedar-policy]]
+version = "4.14.0"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 4.13.0 (#34) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.cedar-policy-core]]
+version = "4.14.0"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 4.13.0 (#34, with cedar-policy) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.cedar-policy-formatter]]
+version = "4.14.0"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 4.13.0 (#34, with cedar-policy) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.cfg-if]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.cfg_aliases]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.chacha20]]
+version = "0.10.2"
+criteria = "safe-to-run"
+
+[[exemptions.chrono]]
+version = "0.4.45"
+criteria = "safe-to-deploy"
+
+[[exemptions.cipher]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.cmake]]
+version = "0.1.58"
+criteria = "safe-to-deploy"
+
+[[exemptions.cmov]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.concurrent-queue]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.const-oid]]
+version = "0.10.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.core-foundation]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cpubits]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.cpufeatures]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.cpufeatures]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.crossbeam-utils]]
+version = "0.8.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.crypto-common]]
+version = "0.1.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.crypto-common]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.ctutils]]
+version = "0.4.4"
+criteria = "safe-to-deploy"
+notes = "Security update for RUSTSEC-2026-0385 (Choice mask generation and u128 comparisons could compile to branches on secret values). Reached only through the Linux keychain: uaos-platform -> zbus-secret-service-keyring-store -> secret-service -> hkdf/hmac/sha2 -> digest 0.11. No imported audit covers 0.4.3 -> 0.4.4 yet. The delta was read in full on 2026-11-05 by the maintainer's AI assistant, which is not a human audit: the u8 to u128 masks are built from Choice::to_u8, which passes the value through core::hint::black_box; on 32-bit targets u128 lt/le compare 64-bit halves without a full-width subtraction; CtLt and CtGt for u128 call those functions; a u128 boundary unit test and a comparison property test are added; Cargo.toml excludes a checkct directory and names a documentation URL instead of a homepage. No unsafe code, no I/O, no new dependency. Crate checksum matches Cargo.lock. Replace with an imported audit when one exists."
+
+[[exemptions.darling]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.darling_core]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.darling_macro]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.data-encoding]]
+version = "2.11.1"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.defmt]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.defmt-macros]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.defmt-parser]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.der-parser]]
+version = "10.0.0"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.deranged]]
+version = "0.5.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.digest]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.digest]]
+version = "0.11.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.displaydoc]]
+version = "0.2.7"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.dyn-clone]]
+version = "1.0.20"
+criteria = "safe-to-deploy"
+
+[[exemptions.educe]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 0.7.6 (#34, pulled by cedar-policy 4.14.0) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.either]]
+version = "1.19.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.ena]]
+version = "0.14.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.endi]]
+version = "1.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.enum-ordinalize]]
+version = "4.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.enum-ordinalize-derive]]
+version = "4.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.enumflags2]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.enumflags2_derive]]
+version = "0.7.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.event-listener]]
+version = "5.4.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.event-listener-strategy]]
+version = "0.5.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.fastrand]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.find-msvc-tools]]
+version = "0.1.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.fixedbitset]]
+version = "0.5.7"
+criteria = "safe-to-deploy"
+
+[[exemptions.fs_extra]]
+version = "1.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-channel]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.futures-io]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-lite]]
+version = "2.6.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-macro]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-task]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.futures-util]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.generic-array]]
+version = "0.14.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.getrandom]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+notes = "Older getrandom line reached only through optional paths of the TLS stack. Import or audit before GA."
+
+[[exemptions.getrandom]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.hashbrown]]
+version = "0.17.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.hermit-abi]]
+version = "0.5.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.hkdf]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.hmac]]
+version = "0.13.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.http]]
+version = "1.5.0"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.http-body]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.http-body-util]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.httparse]]
+version = "1.10.1"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.hybrid-array]]
+version = "0.4.15"
+criteria = "safe-to-deploy"
+
+[[exemptions.hyper]]
+version = "1.12.0"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.hyper-util]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.iana-time-zone]]
+version = "0.1.65"
+criteria = "safe-to-deploy"
+
+[[exemptions.ident_case]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.indexmap]]
+version = "1.8.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.indexmap]]
+version = "2.14.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.itertools]]
+version = "0.10.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff]]
+version = "0.2.38"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-core]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-static]]
+version = "0.2.38"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-tzdb]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.jiff-tzdb-platform]]
+version = "0.1.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.jobserver]]
+version = "0.1.35"
+criteria = "safe-to-deploy"
+
+[[exemptions.js-sys]]
+version = "0.3.106"
+criteria = "safe-to-deploy"
+
+[[exemptions.keyring-core]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.lalrpop]]
+version = "0.22.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.lalrpop-util]]
+version = "0.22.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.lazy_static]]
+version = "1.5.1"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.libc]]
+version = "0.2.190"
+criteria = "safe-to-deploy"
+
+[[exemptions.libsqlite3-sys]]
+version = "0.38.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.linked_hash_set]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.lock_api]]
+version = "0.4.14"
+criteria = "safe-to-deploy"
+
+[[exemptions.log]]
+version = "0.4.34"
+criteria = "safe-to-deploy"
+
+[[exemptions.logos]]
+version = "0.16.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.logos-codegen]]
+version = "0.16.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.logos-derive]]
+version = "0.16.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.memoffset]]
+version = "0.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.miette]]
+version = "7.6.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.miette-derive]]
+version = "7.6.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.minimal-lexical]]
+version = "0.2.1"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.mio]]
+version = "1.2.4"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.new_debug_unreachable]]
+version = "1.0.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.nonempty]]
+version = "0.12.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.num]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-bigint]]
+version = "0.4.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-complex]]
+version = "0.4.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-integer]]
+version = "0.1.47"
+criteria = "safe-to-deploy"
+
+[[exemptions.num-iter]]
+version = "0.1.46"
+criteria = "safe-to-deploy"
+
+[[exemptions.object]]
+version = "0.39.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.oid-registry]]
+version = "0.8.1"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.once_cell]]
+version = "1.21.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.openssl-probe]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA. Only probes where Linux keeps its certificate directories; it does not link OpenSSL."
+
+[[exemptions.ordered-stream]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.parking_lot_core]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.pem]]
+version = "4.0.0"
+criteria = "safe-to-run"
+notes = "Dev-only: the throwaway test certificate authority (rcgen) behind the egress loopback TLS tests. Never part of a release build."
+
+[[exemptions.petgraph]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.phf_shared]]
+version = "0.8.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.pico-args]]
+version = "0.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.pin-project-lite]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+
+[[exemptions.piper]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.polling]]
+version = "3.11.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.portable-atomic-util]]
+version = "0.2.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.powerfmt]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.pretty]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.proc-macro-crate]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+
+[[exemptions.proptest]]
+version = "1.12.0"
+criteria = "safe-to-run"
+
+[[exemptions.psm]]
+version = "0.1.32"
+criteria = "safe-to-deploy"
+
+[[exemptions.r-efi]]
+version = "6.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.rand]]
+version = "0.10.3"
+criteria = "safe-to-run"
+
+[[exemptions.rand_core]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.rand_xorshift]]
+version = "0.5.0"
+criteria = "safe-to-run"
+
+[[exemptions.rcgen]]
+version = "0.14.10"
+criteria = "safe-to-run"
+notes = "Dev-only: the throwaway test certificate authority (rcgen) behind the egress loopback TLS tests. Never part of a release build."
+
+[[exemptions.redox_syscall]]
+version = "0.5.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.ref-cast]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+
+[[exemptions.ref-cast-impl]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+
+[[exemptions.regex]]
+version = "1.13.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.regex-automata]]
+version = "0.4.18"
+criteria = "safe-to-deploy"
+
+[[exemptions.regex-syntax]]
+version = "0.8.11"
+criteria = "safe-to-deploy"
+
+[[exemptions.ring]]
+version = "0.17.14"
+criteria = "safe-to-deploy"
+notes = "Listed in Cargo.lock only as an optional dependency of rustls-webpki and compiled for no target (`cargo tree -i ring --target all` prints nothing). TLS uses aws-lc-rs."
+
+[[exemptions.rusqlite]]
+version = "0.40.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustc-literal-escaper]]
+version = "0.0.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.rusticata-macros]]
+version = "4.1.0"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.rustix]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls]]
+version = "0.23.37"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.rustls-native-certs]]
+version = "0.8.5"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.rustls-pki-types]]
+version = "1.15.1"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.rustls-webpki]]
+version = "0.103.10"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.rustls-webpki]]
+version = "0.103.16"
+criteria = "safe-to-deploy"
+notes = "Security update for RUSTSEC-2026-0382 (paths through distrusted emSign intermediates were accepted). No imported audit covers 0.103.15 -> 0.103.16 yet. The delta was read in full on 2026-10-20 by the maintainer's AI assistant, which is not a human audit: it adds eight distrusted SPKI files embedded with include_bytes, a check of every path certificate and trust anchor against them, a CertDistrusted error and tests; no unsafe code, no I/O, no new dependency. Replace with an imported audit when one exists."
+
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.rusty-fork]]
+version = "0.3.1"
+criteria = "safe-to-run"
+
+[[exemptions.same-file]]
+version = "1.0.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.schannel]]
+version = "0.1.29"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA. Reads the roots in the Windows certificate store for rustls-native-certs; it fetches nothing."
+
+[[exemptions.schemars]]
+version = "0.8.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.schemars]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 1.2.2 (#35) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.schemars_derive]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "Temporary: the bump from 1.2.2 (#35, with schemars) is exempted, not audited. Its audit is deferred to the open-source snapshot cleanup stage ('s decision)."
+
+[[exemptions.scopeguard]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.secret-service]]
+version = "5.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.security-framework]]
+version = "3.7.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.security-framework-sys]]
+version = "2.17.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_derive_internals]]
+version = "0.30.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_json]]
+version = "1.0.154"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_repr]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_spanned]]
+version = "1.1.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_with]]
+version = "3.24.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.serde_with_macros]]
+version = "3.24.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.sha2]]
+version = "0.11.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.sha3]]
+version = "0.10.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.signal-hook-registry]]
+version = "1.4.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.siphasher]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.slab]]
+version = "0.4.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.smallvec]]
+version = "1.16.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.smol_str]]
+version = "0.3.6"
+criteria = "safe-to-deploy"
+
+[[exemptions.socket2]]
+version = "0.6.5"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.stacker]]
+version = "0.1.25"
+criteria = "safe-to-deploy"
+
+[[exemptions.string_cache]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "2.0.119"
+criteria = "safe-to-deploy"
+
+[[exemptions.syn]]
+version = "3.0.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.tempfile]]
+version = "3.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.term]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.time]]
+version = "0.3.55"
+criteria = "safe-to-deploy"
+
+[[exemptions.time-macros]]
+version = "0.2.32"
+criteria = "safe-to-deploy"
+
+[[exemptions.tinyvec]]
+version = "1.13.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.tokio]]
+version = "1.53.3"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.tokio-macros]]
+version = "2.7.2"
+criteria = "safe-to-deploy"
+notes = "Test attribute macros (#[tokio::test]) for the egress tests; part of stack. Import or audit before GA."
+
+[[exemptions.tokio-rustls]]
+version = "0.26.6"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.toml]]
+version = "1.1.8+spec-1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.toml_datetime]]
+version = "1.1.2+spec-1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.toml_edit]]
+version = "0.25.17+spec-1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.toml_parser]]
+version = "1.1.5+spec-1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.toml_writer]]
+version = "1.1.3+spec-1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.tower-service]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.tracing]]
+version = "0.1.44"
+criteria = "safe-to-deploy"
+
+[[exemptions.tracing-attributes]]
+version = "0.1.31"
+criteria = "safe-to-deploy"
+
+[[exemptions.typed-arena]]
+version = "2.0.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.typenum]]
+version = "1.20.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.uds_windows]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-ident]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-script]]
+version = "0.5.8"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicode-security]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.untrusted]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Rustls on aws-lc-rs, verifying against the operating system's root store read locally. Import or audit before GA."
+
+[[exemptions.uuid]]
+version = "1.28.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.version_check]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.walkdir]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.want]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Async and HTTP stack, used only behind the egress door. Cargo-vet 0.10 ignores the newer Bytecode Alliance audits that cover this stack; import or audit before GA."
+
+[[exemptions.wasi]]
+version = "0.11.0+wasi-snapshot-preview1"
+criteria = "safe-to-deploy"
+notes = "WASI target support pulled by the async stack. Never compiled for UAOS's targets."
+
+[[exemptions.wasm-bindgen]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+
+[[exemptions.wasm-bindgen-macro]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+
+[[exemptions.wasm-bindgen-macro-support]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+
+[[exemptions.wasm-bindgen-shared]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+
+[[exemptions.winapi-util]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-core]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-implement]]
+version = "0.60.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-interface]]
+version = "0.59.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-native-keyring-store]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-result]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-strings]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-sys]]
+version = "0.52.0"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+
+[[exemptions.windows-targets]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_i686_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Windows API bindings, 0.52 line: in the lockfile only, through an optional dependency UAOS does not enable, so compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.winnow]]
+version = "1.0.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.x509-parser]]
+version = "0.18.1"
+criteria = "safe-to-run"
+notes = "In the lockfile only: reached through rcgen's optional x509-parser feature, which UAOS leaves off, so it is compiled for no target. Listed because cargo vet covers the whole lockfile."
+
+[[exemptions.yasna]]
+version = "0.6.0"
+criteria = "safe-to-run"
+notes = "Dev-only: the throwaway test certificate authority (rcgen) behind the egress loopback TLS tests. Never part of a release build."
+
+[[exemptions.zbus]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zbus-secret-service-keyring-store]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.zbus_macros]]
+version = "5.19.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zbus_names]]
+version = "4.3.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.zcheapstr]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zeroize]]
+version = "1.9.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.zvariant]]
+version = "5.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zvariant_derive]]
+version = "5.15.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zvariant_utils]]
+version = "4.2.0"
+criteria = "safe-to-deploy"

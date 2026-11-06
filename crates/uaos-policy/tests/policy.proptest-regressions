@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 98f760783c587af52811affeccf970bd8ddb654c2a5c10a1ab4ab7a85ae3b4e3 # shrinks to pieces = [(123, 61, 9), (115, 0, 28)], req = (69, 34)
+cc 2d813ff20ed31848ee33223e329c37b6fce3b65453e40b1aa5744274ee6201e3 # shrinks to grant = Grant { id: grt_00000000000171018101010101010101, principal: Agent(cred_00000000000070008000000000000000), action: ModelCall, resource: Model { provider: Name("A"), model: Name("-") }, pocket: pkt_00000000000070008000000000000000, expires_at_ms: 253402300799000, max_risk_tier: RiskTier(0), data_classes: {}, approves: {} }
