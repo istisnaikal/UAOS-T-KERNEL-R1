@@ -58,7 +58,7 @@ aho-corasick = "1.1.5"
 memchr = "2.8.3"
 cargo_metadata = "0.23.1"
 # xtask reads target roots with a real parser.
-syn = { version = "2.0.119", default-features = false, features = ["full", "parsing"] }
+syn = { version = "3.0.8", default-features = false, features = ["full", "parsing"] }
 # Authorization: formally specified, schema-validated, Apache-2.0. No optional extensions.
 cedar-policy = { version = "4.13.0", default-features = false }
 getrandom = "0.4.3"
