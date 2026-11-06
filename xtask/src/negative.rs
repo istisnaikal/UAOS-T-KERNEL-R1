@@ -204,6 +204,23 @@ pub(crate) fn cases() -> Vec<Case> {
             runner: CLIPPY,
             expect: "disallowed type",
         },
+        // The API documentation builds with rustdoc's lints denied: a public item's doc that links
+        // to a crate-private one fails `cargo doc`.
+        Case {
+            id: "doc-links-private-item",
+            gate: "clippy",
+            tool: None,
+            seed: replace(
+                "crates/uaos-egress/src/connect.rs",
+                "/// A point-in-time copy of the door's counters.\n",
+                "/// A point-in-time copy of [`Counters`].\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["doc", "--workspace", "--no-deps", "--locked"],
+            },
+            expect: "links to private item",
+        },
         Case {
             id: "test-failure",
             gate: "test",
@@ -501,8 +518,7 @@ pub(crate) fn cases() -> Vec<Case> {
                     }
                     #[cfg(not(unix))]
                     {
-                        let _seeded_on_unix_only = ws;
-                        Err("this seed runs on Unix only".to_owned())
+                        Err(format!("this seed runs on Unix only, not in {}", ws.display()))
                     }
                 }),
                 append("crates/uaos-redact-scan/src/lib.rs", "\nconst _: &str = include_str!(\"tape.txt\");\n"),

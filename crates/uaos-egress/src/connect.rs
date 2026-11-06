@@ -49,7 +49,7 @@ pub(crate) struct Counters {
     pub refused: AtomicU64,
 }
 
-/// A point-in-time copy of [`Counters`].
+/// A point-in-time copy of the door's counters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CounterSnapshot {
     /// Name resolutions started.

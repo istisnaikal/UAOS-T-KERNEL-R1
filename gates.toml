@@ -24,7 +24,7 @@ source = "Fmt/clippy/test; code standard."
 lane = "merge"
 status = "active"
 job = "clippy"
-negative = ["clippy-unwrap", "clippy-unsafe", "clippy-ambient-clock", "clippy-nondeterministic-map", "egress-ctor-outside-root", "net-dns-outside-egress", "net-connect-outside-egress", "net-udp-outside-egress", "spawn-outside-supervisor", "net-listen-outside-api", "net-resolver-outside-egress", "net-socket-listen-outside-api", "net-unix-connect-outside-egress", "net-unix-connect-addr-outside-egress", "net-tokio-unix-connect-outside-egress", "net-unix-socket-connect-outside-egress", "net-named-pipe-outside-egress", "spawn-through-tokio-executor", "clippy-ban-path-unresolved", "clippy-ban-silenced", "unbounded-channel", "foreign-source-clippy-only"]
+negative = ["clippy-unwrap", "clippy-unsafe", "clippy-ambient-clock", "clippy-nondeterministic-map", "egress-ctor-outside-root", "net-dns-outside-egress", "net-connect-outside-egress", "net-udp-outside-egress", "spawn-outside-supervisor", "net-listen-outside-api", "net-resolver-outside-egress", "net-socket-listen-outside-api", "net-unix-connect-outside-egress", "net-unix-connect-addr-outside-egress", "net-tokio-unix-connect-outside-egress", "net-unix-socket-connect-outside-egress", "net-named-pipe-outside-egress", "spawn-through-tokio-executor", "clippy-ban-path-unresolved", "clippy-ban-silenced", "unbounded-channel", "foreign-source-clippy-only", "doc-links-private-item"]
 
 [[gate]]
 id = "sources"

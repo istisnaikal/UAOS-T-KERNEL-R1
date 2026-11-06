@@ -162,6 +162,25 @@ fn every_failure_ends_with_its_class_exit_code() {
     assert!(out.stderr.contains("[UAOS-CONFIG-0001]") && out.stderr.contains("`config_version`: expected 1"));
 }
 
+/// A path in printed text, with `/` between its parts. These tests give Unix-style paths and
+/// simulate each system's rules on any host; a Windows host joins the parts with `\`.
+fn slashes(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// The same for JSON, where a `\` in a path is written `\\`.
+fn json_slashes(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace("\\\\", "/")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// Every command's `--json`, exactly: one object on standard output, nothing on standard error.
 #[test]
 fn the_json_output_is_the_contract() {
@@ -170,7 +189,7 @@ fn the_json_output_is_the_contract() {
         let out = invoke(&fs, args, env);
         assert!(out.stderr.is_empty(), "{args:?}: {out:?}");
         assert!(out.stdout.ends_with('\n'));
-        (out.exit_code, out.stdout.trim_end().to_owned())
+        (out.exit_code, json_slashes(out.stdout.trim_end()))
     };
     assert_eq!(
         json(&["--json", "--data-dir", "/d", "init"], &[]),
@@ -317,7 +336,7 @@ fn config_show_without_a_file_uses_the_environment_and_the_defaults() {
     );
     assert_eq!(out.exit_code, 0, "{out:?}");
     assert_eq!(
-        out.stdout,
+        slashes(&out.stdout),
         "# /none/config.toml does not exist; run `uaos init`.\n\
          config_version = 1  # default\n\
          kernel.locale = \"en\"  # default\n\
@@ -334,7 +353,7 @@ fn the_default_data_directory_follows_the_system() {
     let path = |os: Os, env: &[(&str, &str)]| {
         let args = ["config", "path"].iter().map(OsString::from).collect();
         let out = run(&invocation(&sim(), args, env, os));
-        (out.exit_code, out.stdout)
+        (out.exit_code, slashes(&out.stdout))
     };
     assert_eq!(
         path(Os::Unix, &[("HOME", "/home/u")]),

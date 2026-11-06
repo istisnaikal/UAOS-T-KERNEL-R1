@@ -129,6 +129,8 @@ fn ci() -> Result<(), String> {
     // Every library builds without its dev-dependencies: a feature only a test enables must
     // never be what a library compiles against.
     util::run_step(&root, "libs", "cargo", &["check", "--workspace", "--lib", "--locked"])?;
+    // The API documentation builds, with rustdoc's lints denied in the workspace lint table.
+    util::run_step(&root, "docs", "cargo", &["doc", "--workspace", "--no-deps", "--locked"])?;
     sources::run(&root, None)?;
     util::run_step(&root, "test", "cargo", &["test", "--workspace", "--locked"])?;
     arch::check(&root)?;

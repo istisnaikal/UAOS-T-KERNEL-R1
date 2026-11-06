@@ -127,7 +127,7 @@ pub enum Refusal {
 }
 
 /// The effective configuration from the file's bytes (when there is a file) and the environment,
-/// in [`KEYS`] order, each value with its source.
+/// in the order the configuration lists its keys, each value with its source.
 ///
 /// # Errors
 /// [`Refusal`]: a secret, an invalid value, or a scanner failure. Nothing is partly applied.

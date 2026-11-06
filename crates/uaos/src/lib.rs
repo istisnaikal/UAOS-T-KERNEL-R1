@@ -355,7 +355,9 @@ fn data_dir(inv: &Invocation, p: &Parsed) -> Result<PathBuf, Failed> {
         Os::MacOs => var("HOME")
             .map(|h| Path::new(h).join("Library").join("Application Support").join("uaos"))
             .ok_or_else(not_found),
-        Os::Unix => match var("XDG_DATA_HOME").filter(|d| Path::new(d).is_absolute()) {
+        // The XDG specification ignores a relative `XDG_DATA_HOME`. Absolute is Unix's own rule, a
+        // leading `/`, so the answer for `Os::Unix` does not depend on the host that computes it.
+        Os::Unix => match var("XDG_DATA_HOME").filter(|d| d.starts_with('/')) {
             Some(xdg) => Ok(Path::new(xdg).join("uaos")),
             None => var("HOME")
                 .map(|h| Path::new(h).join(".local").join("share").join("uaos"))

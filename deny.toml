@@ -23,19 +23,17 @@ ignore = [
 version = 2
 confidence-threshold = 0.93
 # Every entry must be compatible with distributing an Apache-2.0 binary. Notices are aggregated in
-# NOTICE at release time. MPL-2.0 is file-level copyleft: allowed only for unmodified upstream use.
+# NOTICE at release time. Only licenses the dependency graph uses are listed: one returns, reviewed,
+# with the dependency that needs it (`cargo deny` warns of an allowance nothing uses). Should
+# MPL-2.0 return, it is file-level copyleft and allowed only for unmodified upstream use.
 allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "MIT",
-  "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
   "Zlib",
   "Unicode-3.0",
-  "MPL-2.0",
-  "OpenSSL",              # aws-lc-sys (P1+)
-  "CDLA-Permissive-2.0",  # webpki-roots data (P3+)
 ]
 # NCSA (University of Illinois/NCSA, a permissive BSD-style license) for libfuzzer-sys alone: it
 # vendors LLVM's libFuzzer and is a dependency of the fuzz workspace only (fuzz/), never of a

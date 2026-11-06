@@ -145,6 +145,9 @@ fn crash_path() -> String {
 
 /// The exit code the writer returns when it ends by itself (`journal-crash-writer`).
 const WRITER_FAILED: i32 = 3;
+// On Windows the kill is `TerminateProcess(handle, 1)`: the writer's own failure must not look
+// like it. Checked at compile time, so the constant is used on every platform.
+const _: () = assert!(WRITER_FAILED != 1);
 
 /// Whether the kill ended the writer.
 fn killed(status: std::process::ExitStatus) -> bool {

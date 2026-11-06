@@ -50,6 +50,8 @@ jobs:
       # What rustc read for each local crate in a dev and a release `cargo check` of every target
       # with every feature.
       - run: cargo xtask sources
+      # The API documentation builds; rustdoc's lints are denied in Cargo.toml's lint table.
+      - run: cargo doc --workspace --no-deps --locked
 
   test:
     strategy:
@@ -70,6 +72,9 @@ jobs:
           # and macOS Keychain. Linux runners have no Secret Service daemon.
           UAOS_TEST_OS_KEYCHAIN: ${{ matrix.os != 'ubuntu-latest' && '1' || '0' }}
       - run: cargo test --doc --workspace --locked
+      # Every library builds without its dev-dependencies: the test builds above unify features
+      # with them and cannot see a library that needs a feature only a test enables.
+      - run: cargo check --workspace --lib --locked
 
   arch:
     runs-on: ubuntu-latest
