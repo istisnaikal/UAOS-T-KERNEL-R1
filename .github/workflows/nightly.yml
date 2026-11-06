@@ -169,7 +169,7 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - name: Nightly toolchain (pinned, this job only)
         run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2
         with:
           tool: cargo-deny@0.20.2
       - name: Supply chain of the fuzz workspace (NCSA allowed for libfuzzer-sys alone)
