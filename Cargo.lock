@@ -2903,6 +2903,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uaos-contracts",
+ "uaos-egress",
  "uaos-json",
  "uaos-ledger",
  "uaos-module-api",

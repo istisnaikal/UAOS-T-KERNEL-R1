@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "uaos.op_ledger/1",
+  "description": "The compact ledger delta inside an Operation record's inline payload, under `ledger`.",
+  "type": "object",
+  "properties": {
+    "entries": {
+      "description": "The entries, in the order the ledger applies them: at most two.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DeltaEntry"
+      }
+    },
+    "pool": {
+      "description": "The pool every entry changes.",
+      "$ref": "#/$defs/PoolId"
+    },
+    "reservation": {
+      "description": "The Operation's reservation, which every entry names.",
+      "$ref": "#/$defs/ReservationId"
+    },
+    "v": {
+      "description": "Version, [`LEDGER_DELTA_VERSION`].",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "v",
+    "pool",
+    "reservation",
+    "entries"
+  ],
+  "$defs": {
+    "BudgetTxKind": {
+      "description": "The kind of ledger entry.",
+      "oneOf": [
+        {
+          "description": "Money entering the pool.",
+          "type": "string",
+          "const": "allocate"
+        },
+        {
+          "description": "Hold taken before an Operation executes.",
+          "type": "string",
+          "const": "reserve"
+        },
+        {
+          "description": "Actual spend recorded against a reservation.",
+          "type": "string",
+          "const": "settle"
+        },
+        {
+          "description": "Unused part of a reservation returned to the pool.",
+          "type": "string",
+          "const": "release"
+        },
+        {
+          "description": "Correction in the user's favour.",
+          "type": "string",
+          "const": "refund"
+        },
+        {
+          "description": "Money leaving to another pool.",
+          "type": "string",
+          "const": "transfer_out"
+        },
+        {
+          "description": "Money arriving from another pool.",
+          "type": "string",
+          "const": "transfer_in"
+        },
+        {
+          "description": "Signed manual correction; always audited.",
+          "type": "string",
+          "const": "adjust"
+        }
+      ]
+    },
+    "DeltaEntry": {
+      "description": "One entry of a [`LedgerDelta`]: only what varies from entry to entry.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "Available balance after the entry.",
+          "$ref": "#/$defs/NanoUsd"
+        },
+        "amount": {
+          "description": "Amount (negative only for `adjust`).",
+          "$ref": "#/$defs/NanoUsd"
+        },
+        "before": {
+          "description": "Available balance before the entry.",
+          "$ref": "#/$defs/NanoUsd"
+        },
+        "estimated": {
+          "description": "Whether the amount is an estimate; written only when true.",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "Kind of entry: `reserve`, `settle`, `release` or `adjust` in an Operation's record.",
+          "$ref": "#/$defs/BudgetTxKind"
+        },
+        "reason": {
+          "description": "Why the entry exists.",
+          "$ref": "#/$defs/ReasonCode"
+        },
+        "settled": {
+          "description": "Whether the reservation is fully settled; written only when true.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "amount",
+        "before",
+        "after",
+        "reason"
+      ]
+    },
+    "NanoUsd": {
+      "description": "Signed amount in nano-US-dollars (1e-9 USD) as a canonical decimal string.",
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]{0,18})$"
+    },
+    "PoolId": {
+      "type": "string",
+      "pattern": "^pool_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    },
+    "ReasonCode": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,64}$"
+    },
+    "ReservationId": {
+      "type": "string",
+      "pattern": "^rsv_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$"
+    }
+  }
+}

@@ -34,6 +34,7 @@
 mod admission;
 mod boot;
 mod config;
+mod ledger_task;
 pub mod pipeline;
 mod price;
 mod relay;
@@ -47,12 +48,18 @@ mod supervisor;
 pub use admission::{Admission, AdmissionLimits, DRAINING_RETRY_AFTER, Permit, Refusal, RefusalReason};
 pub use boot::{BootError, BootReport, Booted, CRASH_RECOVERY, LastEnd, boot};
 pub use config::{ConfigCell, ConfigError, ConfigSnapshot, LocaleError, LocaleTag, MAX_LOCALE_TAG};
+pub use ledger_task::{
+    DEFAULT_LEDGER_QUEUE, Held, InFlight, LedgerCallError, LedgerHandle, LedgerSnapshot, LedgerStats,
+    MAX_UPSTREAM_NAME, Movement, OpenReservations, OperationRecord, Released, RepairBy, Settled, is_upstream_name,
+    start_ledger_task,
+};
 pub use price::{DeclaredPrice, Price, PriceError};
 pub use relay::{CutReason, Relay, RelayBody, RelayEnd, RelayError, RelayLimits, RelayReport};
 pub use startup::{JournalSource, Started, StartupError, start_kernel};
 pub use state::{
-    DEFAULT_QUEUE_CAPACITY, ShutdownReason, ShutdownReport, StartRefused, StateActor, StateCore, StateError, StateExit,
-    StateHandle, StateQueue, StateStats, shut_down, start_state_actor, state_queue, stop_reason_for,
+    DEFAULT_QUEUE_CAPACITY, LEDGER_DRAIN_GRACE, ShutdownReason, ShutdownReport, StartRefused, StateActor, StateCore,
+    StateError, StateExit, StateHandle, StateQueue, StateStats, shut_down, start_state_actor, state_queue,
+    stop_reason_for,
 };
 pub use stop::{BootState, Engaged, EngagedBy, Stop, StopReason, StopWatch, boot_state};
 pub use supervisor::{SpawnError, Supervisor, SupervisorLimits};

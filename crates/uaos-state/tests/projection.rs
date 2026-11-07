@@ -90,12 +90,35 @@ fn draft(event_type: EventType, op: Option<u8>, correlation: u8) -> EventDraft {
 }
 
 fn event_type(kind: u8) -> EventType {
-    match kind % 5 {
+    match kind % 6 {
         0 => types::OP_RESERVED_INTENT,
         1 => types::OP_COMMITTED,
         2 => types::OP_FAILED,
         3 => types::OP_INDETERMINATE,
+        // The two-record form's reserve: an Operation's `budget.entry`, with no effect.
+        4 => types::BUDGET_ENTRY,
         _ => EventType::new("mod.test.note").unwrap(),
+    }
+}
+
+/// The class a record carries: none for a `budget.entry`, and a varying one for the others, so
+/// that which record sets an Operation's class shows.
+fn classed(kind: u8, op: Option<u8>, correlation: u8) -> EventDraft {
+    let event_type = event_type(kind);
+    let side_effect_class = if event_type == types::BUDGET_ENTRY {
+        SideEffectClass::None
+    } else {
+        [
+            SideEffectClass::LocalReversible,
+            SideEffectClass::LocalIrreversible,
+            SideEffectClass::External,
+        ][usize::from(kind / 6 % 3)]
+    };
+    EventDraft {
+        side_effect_class,
+        compensable: kind.is_multiple_of(2),
+        risk_tier: RiskTier::new(kind % 4).unwrap(),
+        ..draft(event_type, op, correlation)
     }
 }
 
@@ -203,6 +226,61 @@ fn file_backed_projection_persists_and_can_be_deleted() {
     assert_eq!(p.dump().unwrap(), before, "a deleted projection rebuilds identically");
 }
 
+// ── An Operation's class is its intent's ─────────────.
+
+#[test]
+fn an_indeterminate_operation_shows_its_intents_class_in_both_forms() {
+    let w = World::new(5);
+    let mut j = w.journal();
+    let intent = |op: u8| EventDraft {
+        side_effect_class: SideEffectClass::External,
+        compensable: true,
+        risk_tier: RiskTier::new(2).unwrap(),
+        ..draft(types::OP_RESERVED_INTENT, Some(op), op)
+    };
+    // The two-record form: the reserve's `budget.entry` comes first and carries `none`.
+    j.append(EventDraft {
+        side_effect_class: SideEffectClass::None,
+        risk_tier: RiskTier::new(0).unwrap(),
+        ..draft(types::BUDGET_ENTRY, Some(1), 1)
+    })
+    .unwrap();
+    j.append(intent(1)).unwrap();
+    // A second two-record intent does not change it: boot reads the first.
+    j.append(EventDraft {
+        side_effect_class: SideEffectClass::None,
+        ..draft(types::OP_RESERVED_INTENT, Some(1), 1)
+    })
+    .unwrap();
+    // The one-record form: the intent is the Operation's first record.
+    j.append(intent(2)).unwrap();
+    // Boot's records: indeterminate, at whatever class.
+    let mut incremental = Projections::open_in_memory().unwrap();
+    for op in [1, 2] {
+        j.append(draft(types::OP_INDETERMINATE, Some(op), op)).unwrap();
+        incremental.catch_up(&w.fs, &w.dir()).unwrap();
+    }
+    for op in [1, 2] {
+        let row = incremental
+            .operation(OperationId::from_parts(u64::from(op), [op; 10]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.side_effect_class.as_str(),
+                row.compensable,
+                row.risk_tier
+            ),
+            ("indeterminate", "external", true, 2),
+            "an indeterminate Operation does not show its intent's class (Operation {op})"
+        );
+    }
+    let mut rebuilt = Projections::open_in_memory().unwrap();
+    rebuilt.rebuild(&w.fs, &w.dir()).unwrap();
+    assert_eq!(incremental.dump().unwrap(), rebuilt.dump().unwrap());
+}
+
 // ── Rebuild equivalence ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -232,7 +310,7 @@ proptest! {
         for step in ops {
             match step {
                 Op::Append { kind, op, correlation } => {
-                    j.append(draft(event_type(kind), op, correlation)).unwrap();
+                    j.append(classed(kind, op, correlation)).unwrap();
                 }
                 Op::CatchUp => {
                     let outcome = incremental.catch_up(&w.fs, &w.dir()).unwrap();

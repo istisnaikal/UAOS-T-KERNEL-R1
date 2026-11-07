@@ -8,7 +8,7 @@
 
 use schemars::{Schema, schema_for};
 
-use crate::budget::BudgetTx;
+use crate::budget::{BudgetTx, LedgerDelta};
 use crate::cli::CliOutput;
 use crate::credential::CredentialEntry;
 use crate::error::UaosError;
@@ -68,6 +68,11 @@ pub fn exported() -> Vec<ExportedSchema> {
             name: "grant",
             major: 1,
             schema: schema_for!(GrantEntry),
+        },
+        ExportedSchema {
+            name: "op-ledger",
+            major: 1,
+            schema: schema_for!(LedgerDelta),
         },
         ExportedSchema {
             name: "operation",

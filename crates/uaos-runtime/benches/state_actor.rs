@@ -18,6 +18,11 @@
 //!    rule then flushes inside appends, and the actor flushes at a deadline only when a gap
 //!    opens. Printed: the longest delay of any deadline flush, and P1 measured directly: the
 //!    oldest record's age when any flush that covered it started (`flush_age_max_nanos`).
+//! 4. **The ledger task**. Operations reserved, executed and settled one at a time through the
+//!    ledger task: `reserve` and `execute` timed from the call to the token, beside a bare append
+//!    through the actor timed in the same loop. Each pays one append; what the task adds over it is
+//!    one queue hop and the ledger's own work, which the policy and routing budget bounds (≤ 1 ms
+//!    excluding I/O).
 //!
 //! `UAOS_BENCH_ENV` labels the environment. Dependency-free on purpose (`harness = false`); nothing
 //! leaves the machine.
@@ -33,16 +38,23 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use uaos_contracts::budget::IdempotencyKey;
 use uaos_contracts::event::{Actor, Durability, Metadata, types};
-use uaos_contracts::id::{CorrelationId, TypedId};
+use uaos_contracts::id::{CorrelationId, OperationId, PoolId, ReservationId, TypedId};
 use uaos_contracts::limits::Millis;
-use uaos_contracts::operation::{RiskTier, SideEffectClass};
+use uaos_contracts::money::NanoUsd;
+use uaos_contracts::operation::{OperationKind, RiskTier, SideEffectClass};
 use uaos_contracts::wire::ConfigVersion;
+use uaos_egress::EgressError;
+use uaos_ledger::Ledger;
 use uaos_platform::fs::Fs;
 use uaos_platform::real::fs::OsFs;
 use uaos_platform::real::{OsRng, SystemClock};
 use uaos_platform::{Clock, Rng};
-use uaos_runtime::{StateCore, StateHandle, Supervisor, SupervisorLimits, start_state_actor, state_queue};
+use uaos_runtime::{
+    DEFAULT_LEDGER_QUEUE, EngagedBy, Movement, OperationRecord, Settled, StateCore, StateHandle, Stop, Supervisor,
+    SupervisorLimits, start_ledger_task, start_state_actor, state_queue,
+};
 use uaos_state::journal::{EventDraft, FlushPolicy, Journal};
 
 /// Appends timed in each run of part 1.
@@ -52,6 +64,8 @@ const W: Millis = Millis(50);
 /// A window no part-1 run reaches.
 const LAZY: Millis = Millis(60_000);
 const IDLE_ROUNDS: usize = 100;
+/// Operations timed in part 4.
+const OPERATIONS: usize = 5_000;
 /// Callers and duration of part 3.
 const LOADED_CALLERS: usize = 256;
 const LOADED_FOR: Duration = Duration::from_secs(3);
@@ -255,6 +269,94 @@ fn loaded_delay(root: &Path, runtime: &tokio::runtime::Runtime) {
     );
 }
 
+fn operation(n: usize) -> OperationRecord {
+    OperationRecord {
+        operation_id: OperationId::from_parts(index(n) + 1, [3; 10]),
+        session_id: None,
+        pocket_id: None,
+        request_id: None,
+        agent_id: None,
+        correlation_id: CorrelationId::from_parts(index(n), [6; 10]),
+        actor: Actor::System,
+        kind: OperationKind::ModelCall,
+        upstream: "bench".to_owned(),
+        side_effect_class: SideEffectClass::External,
+        compensable: false,
+        risk_tier: RiskTier::MIN,
+        config_version: ConfigVersion(1),
+    }
+}
+
+fn ledger_task(root: &Path, runtime: &tokio::runtime::Runtime) {
+    let (handle, actor) = start(runtime, open(&root.join("ledger"), LAZY));
+    let supervisor = Supervisor::new(runtime.handle().clone(), SupervisorLimits::default());
+    let correlation_id = CorrelationId::from_parts(1, [7; 10]);
+    let by = EngagedBy {
+        actor: Actor::System,
+        correlation_id,
+        config_version: ConfigVersion(1),
+    };
+    let (mut reserves, mut executes, mut appends) = runtime.block_on(async {
+        let (ledger, _task) = start_ledger_task(
+            &supervisor,
+            Ledger::default(),
+            handle.clone(),
+            Stop::running(),
+            by,
+            DEFAULT_LEDGER_QUEUE,
+        )
+        .unwrap();
+        let pool = PoolId::from_parts(1, [1; 10]);
+        let funds = Movement {
+            principal: Actor::System,
+            key: IdempotencyKey::new("fund").unwrap(),
+            correlation_id,
+            config_version: ConfigVersion(1),
+        };
+        ledger.allocate(pool, NanoUsd::new(1 << 40), funds).await.unwrap();
+        let mut samples = (
+            Vec::with_capacity(OPERATIONS),
+            Vec::with_capacity(OPERATIONS),
+            Vec::with_capacity(OPERATIONS),
+        );
+        for n in 0..OPERATIONS {
+            let id = ReservationId::from_parts(index(n) + 1, [2; 10]);
+            let t = Instant::now();
+            let held = ledger.reserve(operation(n), pool, id, NanoUsd::new(100)).await.unwrap();
+            samples.0.push(t.elapsed());
+            let t = Instant::now();
+            let in_flight = ledger.execute(held).await.unwrap();
+            samples.1.push(t.elapsed());
+            let unsent = Settled::DoorFailed(EgressError::Timeout);
+            ledger.settle(in_flight, unsent).await.unwrap();
+            let t = Instant::now();
+            handle.append(draft(index(n))).await.unwrap();
+            samples.2.push(t.elapsed());
+        }
+        samples
+    });
+    drop(handle);
+    assert_eq!(actor.join().unwrap().final_flush, Ok(()));
+    reserves.sort_unstable();
+    executes.sort_unstable();
+    appends.sort_unstable();
+    println!("4. ledger task: {OPERATIONS} Operations, one at a time, no flush inside; µs (p50, p99, max)");
+    for (name, samples) in [("reserve", &reserves), ("execute", &executes), ("append", &appends)] {
+        println!(
+            "   {name:<7} {:>8.1} {:>8.1} {:>8.1}",
+            us(quantile(samples, 0.50)),
+            us(quantile(samples, 0.99)),
+            us(quantile(samples, 1.0)),
+        );
+    }
+    println!(
+        "   added over one append at p99: reserve {:.1} µs, execute {:.1} µs \
+         (policy and routing budget: p99 ≤ 1 ms excluding I/O)",
+        us(quantile(&reserves, 0.99)) - us(quantile(&appends, 0.99)),
+        us(quantile(&executes, 0.99)) - us(quantile(&appends, 0.99)),
+    );
+}
+
 fn main() {
     let env = std::env::var("UAOS_BENCH_ENV").unwrap_or_else(|_| "unlabelled".to_owned());
     let root = std::env::temp_dir().join(format!("uaos-state-actor-bench-{}", std::process::id()));
@@ -268,5 +370,6 @@ fn main() {
     overhead(&root, &runtime);
     idle_delay(&root, &runtime);
     loaded_delay(&root, &runtime);
+    ledger_task(&root, &runtime);
     std::fs::remove_dir_all(&root).unwrap();
 }

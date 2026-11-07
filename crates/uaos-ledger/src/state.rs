@@ -20,8 +20,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use uaos_contracts::budget::{BudgetTx, BudgetTxError, BudgetTxKind, IdempotencyKey};
+use uaos_contracts::event::Actor;
 use uaos_contracts::id::{PoolId, ReservationId};
 use uaos_contracts::money::NanoUsd;
+
+use crate::inline::STUCK_REPAIR;
 
 /// Balances of one pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,7 +81,7 @@ pub enum LedgerError {
     KeyConflict(String),
     /// A caller-supplied idempotency key uses a form the ledger derives for itself.
     #[error(
-        "idempotency key {0:?} uses a reserved form (rsv_… or a :in, :reserve, :release, :settle, :overrun suffix)"
+        "idempotency key {0:?} uses a reserved form (rsv_… or a :in, :return, :reserve, :release, :settle, :overrun, :repair_release, :repair_settle, :repair_overrun suffix)"
     )]
     KeyReserved(String),
     /// The ledger was rebuilt from the journal and must recover before it accepts new work.
@@ -106,6 +109,12 @@ pub enum LedgerError {
     /// A previous recording failed; operations are refused until the ledger is rebuilt.
     #[error("the ledger is poisoned by an earlier recording failure; rebuild it from the journal")]
     Poisoned,
+    /// A batch is outstanding: one write at a time. An ordering defect in the caller.
+    #[error("a batch is outstanding; apply, withdraw or abandon it first")]
+    Pending,
+    /// A repair names an item recovery did not leave stuck.
+    #[error("the item is not stuck")]
+    NotStuck,
 }
 
 impl LedgerError {
@@ -125,9 +134,53 @@ impl LedgerError {
             | Self::Invalid(_)
             | Self::Inconsistent(_)
             | Self::Overflow
-            | Self::NotReplayed => codes::BUDGET_LEDGER_INCONSISTENT,
+            | Self::NotReplayed
+            | Self::Pending
+            | Self::NotStuck => codes::BUDGET_LEDGER_INCONSISTENT,
         }
     }
+
+    /// A reason code for a stuck item: why recovery could not close it. Never free text, never an
+    /// amount or an id.
+    #[must_use]
+    pub const fn reason_code(&self) -> &'static str {
+        match self {
+            Self::Insufficient { .. } => "insufficient",
+            Self::UnknownPool(_) => "unknown_pool",
+            Self::NotOpen(_) => "not_open",
+            Self::ReservationReused(_) => "reservation_reused",
+            Self::KeyConflict(_) => "key_conflict",
+            Self::KeyReserved(_) => "key_reserved",
+            Self::BalanceMismatch => "balance_mismatch",
+            Self::Invalid(_) => "invalid_entry",
+            Self::Inconsistent(_) => "inconsistent",
+            Self::Overflow => "overflow",
+            Self::RecoveryRequired | Self::NotReplayed | Self::Pending | Self::NotStuck => "ledger_state",
+            Self::Sink(_) | Self::Poisoned => "journal",
+        }
+    }
+}
+
+/// What [`LedgerState::apply_undoable`] changed, to put back with [`LedgerState::undo`]. The
+/// ledger prepares a transition's entries by applying them one after another and undoing them,
+/// so each entry is computed from the state the one before leaves, and nothing stays changed.
+#[derive(Debug)]
+pub(crate) struct Undo {
+    key: IdempotencyKey,
+    pool_id: PoolId,
+    pool_before: Option<PoolState>,
+    commit: UndoCommit,
+}
+
+#[derive(Debug)]
+enum UndoCommit {
+    None,
+    /// The reservation's previous entry in `open`, if any.
+    Open(ReservationId, Option<OpenReservation>),
+    /// The reservation removed from `open`, and whether `closed` already held it.
+    Close(ReservationId, Option<OpenReservation>, bool),
+    Pending(IdempotencyKey),
+    Unpend(IdempotencyKey, PendingTransfer),
 }
 
 fn add(a: NanoUsd, b: NanoUsd) -> Result<NanoUsd, LedgerError> {
@@ -164,6 +217,12 @@ impl LedgerState {
     #[must_use]
     pub fn open_reservations(&self) -> usize {
         self.open.len()
+    }
+
+    /// Whether `id` is reserved and not closed.
+    #[must_use]
+    pub fn is_open(&self, id: ReservationId) -> bool {
+        self.open.contains_key(&id)
     }
 
     /// Whether `id` was ever reserved (open or closed).
@@ -240,9 +299,19 @@ impl LedgerState {
     /// # Errors
     /// The first rule the entry breaks; the state is unchanged on error.
     pub fn apply(&mut self, tx: &BudgetTx) -> Result<(), LedgerError> {
+        self.apply_keeping(tx, false).map(|_| ())
+    }
+
+    /// [`Self::apply`], returning what to put back to undo it (`None` for an idempotent no-op).
+    pub(crate) fn apply_undoable(&mut self, tx: &BudgetTx) -> Result<Option<Undo>, LedgerError> {
+        self.apply_keeping(tx, true)
+    }
+
+    /// Applies `tx`; with `keep`, returns what to put back to undo it. Replay keeps nothing.
+    fn apply_keeping(&mut self, tx: &BudgetTx, keep: bool) -> Result<Option<Undo>, LedgerError> {
         if let Some(previous) = self.applied.get(&tx.idempotency_key) {
             return if previous == tx {
-                Ok(())
+                Ok(None)
             } else {
                 Err(LedgerError::KeyConflict(tx.idempotency_key.as_str().to_owned()))
             };
@@ -254,30 +323,79 @@ impl LedgerState {
                 "balance_after does not match the applied effect",
             ));
         }
-        self.pools.insert(tx.pool_id, pool);
-        match commit {
-            Commit::None => {}
-            Commit::Open(id, open) => {
-                self.open.insert(id, open);
-            }
+        let pool_before = self.pools.insert(tx.pool_id, pool);
+        let undo_commit = match commit {
+            Commit::None => UndoCommit::None,
+            Commit::Open(id, open) => UndoCommit::Open(id, self.open.insert(id, open)),
             Commit::Close(id) => {
-                self.open.remove(&id);
-                self.closed.insert(id);
+                let removed = self.open.remove(&id);
+                let known = !self.closed.insert(id);
+                UndoCommit::Close(id, removed, known)
             }
             Commit::Pending(key, pending) => {
-                self.pending.insert(key, pending);
+                self.pending.insert(key.clone(), pending);
+                UndoCommit::Pending(key)
             }
-            Commit::Unpend(key) => {
+            // `plan` found the pending transfer, so it is there; nothing after the pool's change
+            // may fail.
+            Commit::Unpend(key) => match self.pending.remove(&key) {
+                Some(removed) => UndoCommit::Unpend(key, removed),
+                None => UndoCommit::None,
+            },
+        };
+        self.applied.insert(tx.idempotency_key.clone(), tx.clone());
+        Ok(keep.then(|| Undo {
+            key: tx.idempotency_key.clone(),
+            pool_id: tx.pool_id,
+            pool_before,
+            commit: undo_commit,
+        }))
+    }
+
+    /// Puts back what one [`Self::apply_undoable`] changed. Undo in reverse order of applying.
+    pub(crate) fn undo(&mut self, undo: Undo) {
+        self.applied.remove(&undo.key);
+        match undo.commit {
+            UndoCommit::None => {}
+            UndoCommit::Open(id, previous) => match previous {
+                Some(open) => {
+                    self.open.insert(id, open);
+                }
+                None => {
+                    self.open.remove(&id);
+                }
+            },
+            UndoCommit::Close(id, removed, known) => {
+                if let Some(open) = removed {
+                    self.open.insert(id, open);
+                }
+                if !known {
+                    self.closed.remove(&id);
+                }
+            }
+            UndoCommit::Pending(key) => {
                 self.pending.remove(&key);
             }
+            UndoCommit::Unpend(key, pending) => {
+                self.pending.insert(key, pending);
+            }
         }
-        self.applied.insert(tx.idempotency_key.clone(), tx.clone());
-        Ok(())
+        match undo.pool_before {
+            Some(pool) => {
+                self.pools.insert(undo.pool_id, pool);
+            }
+            None => {
+                self.pools.remove(&undo.pool_id);
+            }
+        }
     }
 
     /// The contract's per-entry rules. A hold that would leave the balance negative is reported
     /// as the ledger reports its cap ([`LedgerError::Insufficient`], with the usable balance).
     fn validate_entry(&self, tx: &BudgetTx) -> Result<(), LedgerError> {
+        if tx.reason_code.as_str() == STUCK_REPAIR && tx.principal != Actor::Human {
+            return Err(LedgerError::Inconsistent("a repair's entries need a human principal"));
+        }
         match tx.validate() {
             Err(BudgetTxError::CapExceeded(kind)) => {
                 self.plan(tx)?;
@@ -422,18 +540,34 @@ impl LedgerState {
                 )
             }
             K::TransferIn => {
-                let from = tx
+                let counterparty = tx
                     .counterparty_pool
                     .ok_or(LedgerError::Inconsistent("transfer without counterparty"))?;
-                let out_key = transfer_out_key(&tx.idempotency_key).ok_or(LedgerError::Inconsistent(
-                    "transfer_in key must be <transfer_out key>:in",
-                ))?;
+                let (out_key, returned) = if let Some(out) = transfer_out_key(&tx.idempotency_key) {
+                    (out, false)
+                } else if let Some(out) = returned_out_key(&tx.idempotency_key) {
+                    (out, true)
+                } else {
+                    return Err(LedgerError::Inconsistent(
+                        "transfer_in key must be <transfer_out key>:in or :return",
+                    ));
+                };
                 let pending = self
                     .pending
                     .get(&out_key)
                     .copied()
                     .ok_or(LedgerError::Inconsistent("transfer_in without transfer_out"))?;
-                if pending.from != from || pending.to != tx.pool_id || pending.amount != amount {
+                // `:in` completes the transfer into its destination; `:return`, a stuck transfer's
+                // repair, closes it back into its source.
+                let (into, from) = if returned {
+                    (pending.from, pending.to)
+                } else {
+                    (pending.to, pending.from)
+                };
+                if returned && tx.reason_code.as_str() != STUCK_REPAIR {
+                    return Err(LedgerError::Inconsistent("only a repair returns a transfer"));
+                }
+                if from != counterparty || into != tx.pool_id || pending.amount != amount {
                     return Err(LedgerError::Inconsistent("transfer_in does not match its transfer_out"));
                 }
                 pool.available = add(pool.available, amount)?;
@@ -462,5 +596,16 @@ fn transfer_out_key(in_key: &IdempotencyKey) -> Option<IdempotencyKey> {
     in_key
         .as_str()
         .strip_suffix(":in")
+        .and_then(|k| IdempotencyKey::new(k).ok())
+}
+
+/// Idempotency key of the `TransferIn` that returns a stuck transfer to its source.
+pub(crate) fn transfer_return_key(out: &IdempotencyKey) -> Result<IdempotencyKey, LedgerError> {
+    IdempotencyKey::new(format!("{}:return", out.as_str())).map_err(LedgerError::Invalid)
+}
+
+fn returned_out_key(key: &IdempotencyKey) -> Option<IdempotencyKey> {
+    key.as_str()
+        .strip_suffix(":return")
         .and_then(|k| IdempotencyKey::new(k).ok())
 }

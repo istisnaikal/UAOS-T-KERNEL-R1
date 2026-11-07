@@ -712,8 +712,8 @@ pub(crate) fn cases() -> Vec<Case> {
             tool: None,
             seed: replace(
                 "crates/uaos-contracts/src/budget.rs",
-                "    pub estimated: bool,\n}",
-                "    pub estimated: bool,\n    /// Seeded.\n    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub seeded: Option<String>,\n}",
+                "(no provider-reported usage was available).\n    pub estimated: bool,\n}",
+                "(no provider-reported usage was available).\n    pub estimated: bool,\n    /// Seeded.\n    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub seeded: Option<String>,\n}",
             ),
             runner: Runner::Xtask(&["schema-check"]),
             expect: "out of date",
@@ -1311,6 +1311,1199 @@ pub(crate) fn cases() -> Vec<Case> {
                 args: &["test", "-p", "uaos-egress", "--test", "door", "a_queued_request_handed_back_is_unreachable"],
             },
             expect: "a request handed back unsent was reported as",
+        },
+        // A library compiles without its dev-dependencies. `is_parse_too_large` exists only with
+        // hyper's `server` feature, which the egress crate enables for its tests alone.
+        Case {
+            id: "lib-needs-dev-feature",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-egress/src/lib.rs",
+                "                unparsable |= h.is_parse() || h.is_parse_status();\n",
+                "                unparsable |= h.is_parse() || h.is_parse_too_large();\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["check", "--workspace", "--lib", "--locked"],
+            },
+            expect: "is_parse_too_large",
+        },
+        // E1 (intent contract): row 1, E7: an unknown type in a kernel domain that carries a delta
+        // is refused as unreadable.
+        Case {
+            id: "unknown-carrier-ignored",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        if ledger.is_some() && !module {\n",
+                "        if ledger.is_some() && !module && seq == u64::MAX {\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "an_unknown_op_type_carrying_a_delta_is_unreadable"],
+            },
+            expect: "an unknown op. carrier was accepted",
+        },
+        // E1 (intent contract): §5.2 row 1: a delta with a field this kernel does not know is
+        // unreadable, not merely inconsistent.
+        Case {
+            id: "delta-unknown-field-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "    if object.keys().any(|key| !DELTA_FIELDS.contains(&key.as_str())) {\n",
+                "    if object.keys().any(|key| !DELTA_FIELDS.contains(&key.as_str())) && seq == u64::MAX {\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_delta_from_a_newer_writer_is_unreadable"],
+            },
+            expect: "a delta with an unknown field was not refused as unreadable",
+        },
+        // E1 (intent contract): §5.2 row 2: a delta that does not parse is refused, not read as no
+        // delta.
+        Case {
+            id: "ledger-field-out-of-range-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        let delta = ledger.map(|value| parse_delta(seq, value)).transpose()?;\n",
+                "        let delta = ledger.and_then(|value| parse_delta(seq, value).ok());\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_delta_that_does_not_parse_is_inconsistent"],
+            },
+            expect: "a delta that does not parse was accepted",
+        },
+        // E1 (intent contract): §5.2 row 3, §3.3: a closing record's entries must fit its place.
+        Case {
+            id: "place-unchecked",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "    if !fits {\n        return inconsistent(seq, \"a closing record's entries do not fit its place\");\n    }\n    track.outcome = Outcome::Closed;\n    expand_at(seq, delta, &envelope.actor)\n}\n\n/// A later outcome",
+                "    if !fits && seq == u64::MAX {\n        return inconsistent(seq, \"a closing record's entries do not fit its place\");\n    }\n    track.outcome = Outcome::Closed;\n    expand_at(seq, delta, &envelope.actor)\n}\n\n/// A later outcome",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_record_out_of_its_place_is_refused"],
+            },
+            expect: "entries out of their place were accepted",
+        },
+        // E1 (intent contract): §3.3: after a one-record intent, the first outcome carries its
+        // closing entries.
+        Case {
+            id: "entryless-outcome-after-intent-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        return inconsistent(\n            seq,\n            \"a first outcome after a one-record intent carries no closing entries\",\n        );\n",
+                "        return Ok(Vec::new());\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "an_outcome_without_its_closing_entries_is_refused"],
+            },
+            expect: "an outcome that leaves the reservation open was accepted",
+        },
+        // E1 (intent contract): §3.1, §5.2 row 3: a delta on a record without an Operation is
+        // refused.
+        Case {
+            id: "intent-without-operation-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "                return inconsistent(seq, \"a ledger delta on a record without an Operation\");\n",
+                "                return Ok(());\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "an_intent_without_its_operation_is_refused"],
+            },
+            expect: "an intent without an operation_id was accepted",
+        },
+        // E1 (intent contract): §5.2 row 5: a closing record names the reservation its intent
+        // established.
+        Case {
+            id: "foreign-reservation-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        && (Some(delta.pool) != track.pool || Some(delta.reservation) != track.reservation)\n",
+                "        && seq == u64::MAX\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_closing_record_for_another_reservation_is_refused"],
+            },
+            expect: "a close of another reservation was accepted",
+        },
+        // E1 (intent contract): §5.2 row 6: no entries after the reservation closed.
+        Case {
+            id: "entries-after-outcome-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "    if track.outcome != Outcome::Stuck {\n",
+                "    if track.outcome == Outcome::Pending {\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "entries_after_the_outcome_are_refused"],
+            },
+            expect: "entries after the reservation closed were accepted",
+        },
+        // E1 (intent contract): §5.2 row 4: an Operation has at most one one-record intent.
+        Case {
+            id: "second-intent-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        History::OneRecord => return inconsistent(seq, \"an Operation has a second one-record intent\"),\n",
+                "        History::OneRecord => {}\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_second_intent_is_refused"],
+            },
+            expect: "a second one-record intent was accepted",
+        },
+        // E1 (intent contract): §5.2 row 7: a budget.entry never names a one-record reservation.
+        Case {
+            id: "entry-outside-operation-accepted",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        if let Some(seq) = conflict {\n",
+                "        if let Some(seq) = conflict.filter(|_| false) {\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_budget_entry_never_names_a_one_record_reservation"],
+            },
+            expect: "a budget.entry closing a one-record reservation was accepted",
+        },
+        // E1 (intent contract): §10 row 21, E7: a delta on a known type that carries none is
+        // refused.
+        Case {
+            id: "known-type-ledger-ignored",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        if types::ALL.contains(&&envelope.event_type) {\n            if ledger.is_some() {\n",
+                "        if types::ALL.contains(&&envelope.event_type) {\n            if ledger.is_some() && seq == u64::MAX {\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "a_known_type_that_carries_no_entries_refuses_a_delta"],
+            },
+            expect: "a delta on a known type that carries none was accepted",
+        },
+        // E1 (intent contract): §10 row 21, E7: every domain but module. Is the kernel's, not op.
+        // And budget. Alone.
+        Case {
+            id: "unknown-domain-carrier-ignored",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "        let module = envelope.event_type.as_str().starts_with(\"module.\");\n",
+                "        let module = !(envelope.event_type.as_str().starts_with(\"op.\") || envelope.event_type.as_str().starts_with(\"budget.\"));\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "inline", "an_unknown_kernel_domain_carrier_is_unreadable_and_a_module_event_is_not_read"],
+            },
+            expect: "a carrier of an unknown kernel type was accepted",
+        },
+        // E1 (intent contract): §5.3, §10 row 6: the two-record form still boots.
+        Case {
+            id: "legacy-intent-refused",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "            History::NoIntent | History::TwoRecord => {\n                track.history = History::TwoRecord;\n                Ok(Vec::new())\n            }\n",
+                "            History::NoIntent | History::TwoRecord => inconsistent(seq, \"seeded: the two-record form refused\"),\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "two_record", "the_two_record_fixture_boots_as_it_did"],
+            },
+            expect: "the two-record fixture's entries are no longer read",
+        },
+        // E1 (intent contract): §3.3, §10 row 6: the transition check applies to one-record
+        // histories only.
+        Case {
+            id: "transition-check-on-two-record",
+            gate: "test",
+            tool: None,
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "            History::NoIntent | History::TwoRecord => {\n                track.history = History::TwoRecord;\n                Ok(Vec::new())\n            }\n",
+                "            History::NoIntent | History::TwoRecord => {\n                track.history = History::OneRecord;\n                track.state = Operation::propose(operation, OperationKind::ModelCall, envelope.side_effect_class, envelope.compensable, envelope.risk_tier).apply(Transition::Authorize).and_then(|op| op.apply(Transition::Reserve)).ok();\n                Ok(Vec::new())\n            }\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "two_record", "the_two_record_fixture_boots_as_it_did"],
+            },
+            expect: "the two-record fixture's entries are no longer read",
+        },
+        Case {
+            id: "delta-drops-estimated",
+            gate: "test",
+            tool: None,
+            // The delta loses the `estimated` flag of a recovery's settlement.
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "            estimated: tx.estimated,\n",
+                "            estimated: false,\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "the_extremes_prepare_and_survive_the_delta"],
+            },
+            expect: "a prepared entry does not survive the delta",
+        },
+        Case {
+            id: "ledger-applies-before-ack",
+            gate: "budget-concurrency",
+            tool: None,
+            // A prepared batch stays applied; state runs ahead of the journal.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        for undo in undos.into_iter().rev() {\n            self.state.undo(undo);\n        }\n",
+                "        drop(undos);\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "a_prepared_batch_changes_nothing_until_it_is_applied"],
+            },
+            expect: "the ledger changed before the acknowledgement",
+        },
+        Case {
+            id: "unwritten-refusal-poisons",
+            gate: "budget-concurrency",
+            tool: None,
+            // A refusal that wrote nothing poisons the ledger.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        if batch.applied > 0 {\n            self.poisoned = true;\n        }\n        batch.then.withdrawn()",
+                "        self.poisoned = true;\n        batch.then.withdrawn()",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "a_refusal_that_wrote_nothing_withdraws_and_the_ledger_stays_live"],
+            },
+            expect: "a refusal that wrote nothing poisoned the ledger",
+        },
+        Case {
+            id: "withdraw-after-partial-write",
+            gate: "budget-concurrency",
+            tool: None,
+            // A batch whose first record landed is withdrawn and the ledger stays live.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        if batch.applied > 0 {\n            self.poisoned = true;\n        }\n        batch.then.withdrawn()",
+                "        batch.then.withdrawn()",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "a_batch_part_journaled_cannot_be_withdrawn"],
+            },
+            expect: "a withdraw after a record landed left the ledger live",
+        },
+        Case {
+            id: "ledger-allows-second-batch",
+            gate: "budget-concurrency",
+            tool: None,
+            // A second batch is prepared while one is outstanding.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "} else if self.batch_outstanding {",
+                "} else if self.batch_outstanding && self.poisoned {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "one_batch_at_a_time"],
+            },
+            expect: "a second batch was prepared while one was outstanding",
+        },
+        Case {
+            id: "stuck-items-miscounted",
+            gate: "test",
+            tool: None,
+            // The plan leaves out what `recover` cannot close, so boot and `stuck_items` disagree
+            // on the count.
+            seed: replace(
+                "crates/uaos-ledger/src/plan.rs",
+                "    plan.recover_stuck = recovery.stuck_items;\n",
+                "    drop(recovery);\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "the_plan_counts_each_stuck_item_once_on_this_boot_and_the_next"],
+            },
+            expect: "the plan miscounted the stuck items",
+        },
+        Case {
+            id: "recover-touches-one-record",
+            gate: "test",
+            tool: None,
+            // `recover` closes a one-record reservation through a `budget.entry`.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "            .filter(|(id, _)| !plan.is_one_record(**id))\n",
+                "",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "recover_never_writes_for_a_one_record_reservation"],
+            },
+            expect: "recover wrote a budget.entry for a one-record reservation",
+        },
+        Case {
+            id: "stuck-one-record-goes-live",
+            gate: "test",
+            tool: None,
+            // The ledger goes live while a one-record item is stuck.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        self.stuck = plan.one_record_stuck().to_vec();",
+                "        self.stuck = Vec::new();",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "a_stuck_one_record_reservation_holds_the_ledger"],
+            },
+            expect: "the ledger went live with a one-record item stuck",
+        },
+        Case {
+            id: "repair-accepts-live-reservation",
+            gate: "budget-concurrency",
+            tool: None,
+            // A repair is prepared for an item recovery did not leave stuck.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        if !self.stuck.iter().any(|stuck| stuck.kind == item.kind) {\n            return Err(LedgerError::NotStuck);\n        }\n",
+                "",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "a_repair_needs_a_stuck_item"],
+            },
+            expect: "a repair was prepared for an item that is not stuck",
+        },
+        Case {
+            id: "repair-keys-collide",
+            gate: "budget-concurrency",
+            tool: None,
+            // A repair's entries take the ledger's own keys.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "            Self::Repair => repair,",
+                "            Self::Repair => own,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "each_repair_replays_with_its_own_keys"],
+            },
+            expect: "a repair's entries do not carry their own keys",
+        },
+        Case {
+            id: "boot-recovers-closed-operation",
+            gate: "test",
+            tool: None,
+            // Boot reads an Operation its settled `op.indeterminate` closed as still open, and
+            // nothing checks the plan against the intents: a crash during boot recovers it twice.
+            seed: both(
+                replace(
+                    "crates/uaos-ledger/src/inline.rs",
+                    "    track.outcome = Outcome::Closed;\n    expand_at(seq, delta, &envelope.actor)\n}\n\n/// A later outcome",
+                    "    if *kind != types::OP_INDETERMINATE {\n        track.outcome = Outcome::Closed;\n    }\n    expand_at(seq, delta, &envelope.actor)\n}\n\n/// A later outcome",
+                ),
+                replace(
+                    "crates/uaos-runtime/src/boot.rs",
+                    "        if !intents.iter().any(|intent| intent.operation_id == Some(open.operation)) {",
+                    "        if intents.len() == usize::MAX && !intents.iter().any(|intent| intent.operation_id == Some(open.operation)) {",
+                ),
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "a_crash_during_boot_converges"],
+            },
+            expect: "an Operation was recovered twice",
+        },
+        Case {
+            id: "recovery-entry-unattributed",
+            gate: "test",
+            tool: None,
+            // The record that carries a recovery's settlement does not link to its Operation's
+            // intent.
+            seed: replace(
+                "crates/uaos-runtime/src/boot.rs",
+                "        parent_id: Some(intent.id),\n",
+                "        parent_id: None,\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "an_open_one_record_operation_recovers_in_its_own_record"],
+            },
+            expect: "a recovery record is not attributed to its Operation",
+        },
+        Case {
+            id: "indeterminate-hides-executing",
+            gate: "test",
+            tool: None,
+            // The recovery record says no `op.executing` was journaled when one was.
+            seed: replace(
+                "crates/uaos-runtime/src/boot.rs",
+                "        \"executing_recorded\": open.executing_recorded,\n",
+                "        \"executing_recorded\": false,\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "an_open_one_record_operation_recovers_in_its_own_record"],
+            },
+            expect: "the recovery record hides the Operation's op.executing",
+        },
+        Case {
+            id: "projection-class-from-first-record",
+            gate: "test",
+            tool: None,
+            // The projection keeps the class of an Operation's first record, a two-record
+            // `budget.entry`'s `none`.
+            seed: replace(
+                "crates/uaos-state/src/projection.rs",
+                "                let intent = e.event_type == types::OP_RESERVED_INTENT;\n",
+                "                let intent = false;\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-state", "--test", "projection", "an_indeterminate_operation_shows_its_intents_class_in_both_forms"],
+            },
+            expect: "an indeterminate Operation does not show its intent's class",
+        },
+        Case {
+            id: "rehearsal-not-undone",
+            gate: "test",
+            tool: None,
+            // The plan's rehearsal of boot stays applied to the ledger boot then recovers.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "        for undo in log.into_iter().rev() {\n            self.state.undo(undo);\n        }\n",
+                "        drop(log);\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-ledger", "--test", "two_phase", "the_rehearsal_leaves_the_replayed_ledger_as_it_was"],
+            },
+            expect: "the rehearsal changed the replayed ledger",
+        },
+        Case {
+            id: "task-applies-before-ack",
+            gate: "budget-concurrency",
+            tool: None,
+            // A write whose record's fate is unknown is applied anyway.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        self.ledger.abandon(batch);\n        self.fail();\n        LedgerCallError::Abandoned(error)\n",
+                "        drop(self.ledger.apply(batch));\n        self.fail();\n        LedgerCallError::Abandoned(error)\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_reservation_is_held_only_after_its_intent_lands"],
+            },
+            expect: "the ledger changed before the intent's acknowledgement",
+        },
+        Case {
+            id: "held-before-intent-ack",
+            gate: "test",
+            tool: None,
+            // A `Held` token is handed out though its intent never landed.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            Err(error) => Err(self.failed(batch, 0, error)),\n",
+                "            Err(_error) => Ok(Held { reservation: id, amount, debt: Some(Debt { token: self.ledger.apply(batch), slot }), record, intent: <EventId as uaos_contracts::id::TypedId>::from_parts(0, [0; 10]), offered: None }),\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_reservation_is_held_only_after_its_intent_lands"],
+            },
+            expect: "a reservation was handed out without its intent's acknowledgement",
+        },
+        Case {
+            id: "abandon-without-stop",
+            gate: "budget-concurrency",
+            tool: None,
+            // An abandoned write poisons the ledger and leaves the kernel running.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        self.ledger.poison();\n        let _engaged = self.stop.engage(StopReason::LedgerFailed, self.by.clone());\n",
+                "        self.ledger.poison();\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_reservation_is_held_only_after_its_intent_lands"],
+            },
+            expect: "an abandoned write did not stop the kernel",
+        },
+        Case {
+            id: "ledger-task-unordered",
+            gate: "budget-concurrency",
+            tool: None,
+            // A write of several records reaches the journal in another order than the ledger
+            // applies it.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        for (landed, draft) in drafts.into_iter().enumerate() {",
+                "        for (landed, draft) in drafts.into_iter().rev().enumerate() {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "concurrent_writes_never_overspend_and_the_journal_is_the_ledger"],
+            },
+            expect: "the journal's order is not the ledger's",
+        },
+        Case {
+            id: "ledger-panic-unstopped",
+            gate: "test",
+            tool: None,
+            // A ledger task that unwinds engages nothing.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            let _engaged = stop.engage(StopReason::LedgerFailed, by);\n",
+                "            drop((stop, by));\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--lib", "ledger_task::tests::a_task_that_unwinds_engages_the_stop"],
+            },
+            expect: "a ledger task that unwound left the kernel running",
+        },
+        Case {
+            id: "intent-reserve-recorded-separately",
+            gate: "journal-durability",
+            tool: None,
+            // The reserve is journaled as a `budget.entry` of its own before the intent.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        match self.state.append(draft).await {\n            Ok(appended) => {\n                let token = self.ledger.apply(batch);",
+                "        if let Ok(entry) = budget_entry_draft(&batch.entries()[0], record.correlation_id, Some(record.operation_id), record.config_version) {\n            let _separate = self.state.append(entry).await;\n        }\n        match self.state.append(draft).await {\n            Ok(appended) => {\n                let token = self.ledger.apply(batch);",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "concurrent_writes_never_overspend_and_the_journal_is_the_ledger"],
+            },
+            expect: "a reservation was recorded apart from its intent",
+        },
+        Case {
+            id: "inflight-before-executing-record",
+            gate: "test",
+            tool: None,
+            // The in-flight token is handed out without `op.executing`.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        match self.state.append(executing_draft(&held.record, held.intent)).await {",
+                "        match Ok::<(), StateError>(()) {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "execution_starts_only_after_its_record_and_settles_in_one_record"],
+            },
+            expect: "an InFlight token exists before its op.executing landed",
+        },
+        Case {
+            id: "executing-unknown-fate-released",
+            gate: "test",
+            tool: None,
+            // An `op.executing` of unknown fate releases the reservation.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                self.fail();\n                drop(held);\n                Err(LedgerCallError::Abandoned(error))",
+                "                let HeldParts { token, record, .. } = held;\n                if let Ok(batch) = self.ledger.prepare_release(token, &record.actor) {\n                    let _released = self.ledger.apply(batch);\n                }\n                self.fail();\n                Err(LedgerCallError::Abandoned(error))",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "an_executing_record_of_unknown_fate_keeps_the_reservation_open"],
+            },
+            expect: "an op.executing of unknown fate released its reservation",
+        },
+        Case {
+            id: "unsent-settled-in-full",
+            gate: "test",
+            tool: None,
+            // A request the door never sent is settled as unknown, in full.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            Usage::Reported(NanoUsd::ZERO),\n            types::OP_FAILED,",
+                "            Usage::Unknown,\n            types::OP_FAILED,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "the_doors_verdict_decides_how_the_reservation_closes"],
+            },
+            expect: "an unsent request was settled in full",
+        },
+        Case {
+            id: "maybe-sent-released",
+            gate: "test",
+            tool: None,
+            // A request that may have been sent is released.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        Settled::DoorFailed(error) => (Usage::Unknown, types::OP_FAILED, maybe(error.kind(), false)),",
+                "        Settled::DoorFailed(error) => (Usage::Reported(NanoUsd::ZERO), types::OP_FAILED, maybe(error.kind(), false)),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "the_doors_verdict_decides_how_the_reservation_closes"],
+            },
+            expect: "a request that may have been sent was released",
+        },
+        Case {
+            id: "already-sent-released",
+            gate: "test",
+            tool: None,
+            // The door's `AlreadySent` reads as never sent.
+            seed: replace(
+                "crates/uaos-egress/src/lib.rs",
+                "            | Self::Tls(_) => false,\n            Self::Interrupted(_) | Self::Unusable(_) | Self::AlreadySent => true,",
+                "            | Self::Tls(_)\n            | Self::AlreadySent => false,\n            Self::Interrupted(_) | Self::Unusable(_) => true,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "the_doors_verdict_decides_how_the_reservation_closes"],
+            },
+            expect: "an Operation that already sent was released",
+        },
+        Case {
+            id: "zero-cost-written-unsent",
+            gate: "test",
+            tool: None,
+            // A relay completed at cost 0 is written as unsent.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "serde_json::json!({\"reason\": \"completed\", \"usage_final\": report.usage_final}),",
+                "serde_json::json!({\"reason\": \"completed\", \"usage_final\": report.usage_final, \"sent\": false}),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "each_typed_close_writes_its_own_record"],
+            },
+            expect: "a completed relay was written as unsent",
+        },
+        Case {
+            id: "answered-closed-as-abandoned",
+            gate: "test",
+            tool: None,
+            // An answer the relay refused loses its reason.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        Settled::Answered { reason, .. } => (Usage::Unknown, types::OP_FAILED, maybe(reason.as_str(), false)),",
+                "        Settled::Answered { .. } => (Usage::Unknown, types::OP_FAILED, maybe(\"abandoned\", false)),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "each_typed_close_writes_its_own_record"],
+            },
+            expect: "an answered Operation was closed as abandoned",
+        },
+        Case {
+            id: "settlement-split-across-records",
+            gate: "journal-durability",
+            tool: None,
+            // A settlement's entries are journaled as `budget.entry` records before its closing
+            // record.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        match self.state.append(draft).await {\n            Ok(appended) => Closed::Done(self.ledger.apply(batch), appended),",
+                "        for tx in batch.entries() {\n            if let Ok(entry) = budget_entry_draft(tx, record.correlation_id, Some(record.operation_id), record.config_version) {\n                let _separate = self.state.append(entry).await;\n            }\n        }\n        match self.state.append(draft).await {\n            Ok(appended) => Closed::Done(self.ledger.apply(batch), appended),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_settlement_cut_anywhere_is_whole_or_absent"],
+            },
+            expect: "a settlement was split across records",
+        },
+        Case {
+            id: "offered-close-lost",
+            gate: "test",
+            tool: None,
+            // A dropped token forgets the close its caller offered.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            let _queue = slot.send(Owed::InFlight(InFlightParts {\n                token,\n                record: self.record.clone(),\n                intent: self.intent,\n                offered: self.offered.take(),",
+                "            let _queue = slot.send(Owed::InFlight(InFlightParts {\n                token,\n                record: self.record.clone(),\n                intent: self.intent,\n                offered: None,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_offered_by_a_caller_that_stops_waiting_still_lands"],
+            },
+            expect: "a cancelled caller's close was lost",
+        },
+        Case {
+            id: "dropped-token-leaks",
+            gate: "test",
+            tool: None,
+            // The task ignores a dropped `Held` token.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            Owed::Held(held) => self.release_offered(held).await.map(drop),",
+                "            Owed::Held(_held) => Ok(()),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_dropped_token_is_closed_by_the_task"],
+            },
+            expect: "a dropped token left its reservation open",
+        },
+        Case {
+            id: "orphan-inflight-settled-in-full",
+            gate: "test",
+            tool: None,
+            // An in-flight token that never left the task is settled as if it reached the door.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            let _closed = self.settle_unsent(orphan, \"abandoned\", true).await;",
+                "            let _closed = self.settle_offered(orphan).await;",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "an_in_flight_token_whose_caller_is_gone_settles_at_zero"],
+            },
+            expect: "an InFlight token that never left the task was settled in full",
+        },
+        Case {
+            id: "stop-after-executing-sent",
+            gate: "test",
+            tool: None,
+            // `execute` skips its second check of the stop.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                    offered: None,\n                };\n                if self.stop.is_engaged() {",
+                "                    offered: None,\n                };\n                if false {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_stop_engaged_while_executing_is_journaled_closes_at_zero"],
+            },
+            expect: "a stop engaged during op.executing's append let execution start",
+        },
+        Case {
+            id: "retry-after-actor-ended",
+            gate: "budget-concurrency",
+            tool: None,
+            // The task retries a close after the state actor has ended.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            Err(error @ StateError::StopPending(_)) => match self.ledger.withdraw(batch) {",
+                "            Err(error @ (StateError::StopPending(_) | StateError::NotQueued)) => match self.ledger.withdraw(batch) {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_after_the_state_actor_ended_is_not_retried"],
+            },
+            expect: "a close was retried after the state actor ended",
+        },
+        Case {
+            id: "shutdown-before-ledger-drain",
+            gate: "journal-durability",
+            tool: None,
+            // `kernel.shutdown` is written before the ledger task drains.
+            seed: replace(
+                "crates/uaos-runtime/src/state.rs",
+                "    let admitted = admission.in_flight().0;\n    let left = match ledger {\n        // The drain ends at `until`; a task that has not answered a grace later (one stuck in a\n        // write the state actor has not answered) is counted as one, and the shutdown goes on.\n        Some(ledger) => {\n            let answered = tokio::time::timeout_at(\n                until.checked_add(LEDGER_DRAIN_GRACE).unwrap_or(until),\n                ledger.shutdown(until),\n            )\n            .await;\n            match answered {\n                Ok(Ok(open)) => open.0,\n                Ok(Err(_)) | Err(_) => 1,\n            }\n        }\n        None => 0,\n    };\n    let open = admitted.saturating_add(left);\n    state.shutdown(ShutdownReason::new(by, open)).await\n",
+                "    let admitted = admission.in_flight().0;\n    let report = state.shutdown(ShutdownReason::new(by, admitted)).await;\n    if let Some(ledger) = ledger {\n        let _left = ledger.shutdown(until).await;\n    }\n    report\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "shutdown_drains_the_ledger_before_its_record"],
+            },
+            expect: "kernel.shutdown was written before the ledger drained",
+        },
+        Case {
+            id: "drain-refuses-settle",
+            gate: "journal-durability",
+            tool: None,
+            // The draining task refuses a close.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                    Some((in_flight, _slot)) => self.settle_offered(in_flight).await,",
+                "                    Some((_in_flight, _slot)) if self.draining.load(Ordering::Acquire) => Err(LedgerCallError::Draining),\n                    Some((in_flight, _slot)) => self.settle_offered(in_flight).await,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "shutdown_drains_the_ledger_before_its_record"],
+            },
+            expect: "a close was refused while the ledger drained",
+        },
+        Case {
+            id: "drain-pending-close-uncounted",
+            gate: "journal-durability",
+            tool: None,
+            // A close still queued at the deadline is counted as done.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            let _unanswered = reply.send(self.open_reservations());",
+                "            let queued = u32::try_from(debts.len()).unwrap_or(0);\n            let _unanswered = reply.send(OpenReservations(self.open_reservations().0.saturating_sub(queued)));",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "shutdown_counts_what_the_drain_left_open"],
+            },
+            expect: "kernel.shutdown miscounted the work left open",
+        },
+        Case {
+            id: "drain-live-token-uncounted",
+            gate: "journal-durability",
+            tool: None,
+            // `open_operations` counts admission alone, not the reservations the task leaves open.
+            seed: replace(
+                "crates/uaos-runtime/src/state.rs",
+                "    let open = admitted.saturating_add(left);\n",
+                "    let _left = left;\n    let open = admitted;\n",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "shutdown_counts_what_the_drain_left_open"],
+            },
+            expect: "kernel.shutdown miscounted the work left open",
+        },
+        Case {
+            id: "drain-counts-stuck-item",
+            gate: "journal-durability",
+            tool: None,
+            // A stuck reservation is counted as work left open.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        let open = state.open_reservations().saturating_sub(stuck);",
+                "        let open = state.open_reservations().saturating_sub(stuck.min(0));",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "a_clean_shutdown_does_not_count_a_stuck_item"],
+            },
+            expect: "a stuck item was counted as work left open",
+        },
+        Case {
+            id: "drain-deadline-unseen-by-retry",
+            gate: "journal-durability",
+            tool: None,
+            // A close retrying in the stop record's pause never sees the shutdown deadline.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            .is_some_and(|deadline| Instant::now() >= deadline)\n    }",
+                "            .is_some_and(|deadline| Instant::now() >= deadline && deadline < deadline)\n    }",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_retrying_when_shutdown_begins_ends_at_the_deadline"],
+            },
+            expect: "a close retrying in the stop record's pause held the drain past its deadline",
+        },
+        Case {
+            id: "repair-form-by-exact-item",
+            gate: "test",
+            tool: None,
+            // The repair's form is chosen by the whole stuck item, reason included.
+            seed: replace(
+                "crates/uaos-ledger/src/ledger.rs",
+                "            StuckKind::Reservation(id) if self.stuck.iter().any(|stuck| stuck.kind == item.kind) => {",
+                "            StuckKind::Reservation(id) if self.stuck.contains(item) => {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "a_repair_through_the_ledger_task_resolves_its_stuck_item"],
+            },
+            expect: "the repair is not the Operation's one resolution",
+        },
+        Case {
+            id: "stop-failure-read-as-unknown-fate",
+            gate: "test",
+            tool: None,
+            // A command refused because its stop record failed reads as a write of unknown fate.
+            seed: replace(
+                "crates/uaos-runtime/src/state.rs",
+                "            StateError::Journal(error) => StateError::StopPending(error),",
+                "            StateError::Journal(error) => StateError::Journal(error),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "state", "appends_inside_the_pause_try_nothing"],
+            },
+            expect: "a command refused because its stop record failed read as a write of unknown fate",
+        },
+        Case {
+            id: "offer-on-first-poll",
+            gate: "test",
+            tool: None,
+            // `settle` offers its close only on the first poll.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        in_flight.offered = Some(settled);\n        let commands = self.commands.clone();\n        async move {",
+                "        let commands = self.commands.clone();\n        async move {\n            in_flight.offered = Some(settled);",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_offered_by_a_future_never_polled_still_lands"],
+            },
+            expect: "an offered close was lost because its future was never polled",
+        },
+        Case {
+            id: "repair-outcome-ignored",
+            gate: "test",
+            tool: None,
+            // A failed repair's resolution is written as `op.committed`.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                outcome: RepairOutcome::Failed,\n                ..\n            } => (types::OP_FAILED, \"settled\"),",
+                "                outcome: RepairOutcome::Failed,\n                ..\n            } => (types::OP_COMMITTED, \"settled\"),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "boot", "a_repair_through_the_ledger_task_resolves_its_stuck_item"],
+            },
+            expect: "a repair's outcome wrote the wrong record type",
+        },
+        Case {
+            id: "drain-waits-for-deadline",
+            gate: "journal-durability",
+            tool: None,
+            // The drain waits for its deadline though every token is closed.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                && (self.live_tokens() == 0 || Instant::now() >= deadline)",
+                "                && Instant::now() >= deadline",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "shutdown_drains_the_ledger_before_its_record"],
+            },
+            expect: "the drain waited for its deadline though every token was closed",
+        },
+        Case {
+            id: "unanswered-drain-counted-zero",
+            gate: "journal-durability",
+            tool: None,
+            // A ledger task that cannot answer the shutdown is counted as nothing.
+            seed: replace(
+                "crates/uaos-runtime/src/state.rs",
+                "                Ok(Err(_)) | Err(_) => 1,",
+                "                Ok(Err(_)) | Err(_) => 0,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_ledger_task_that_cannot_answer_is_counted_as_one"],
+            },
+            expect: "a ledger task that could not answer was counted as nothing",
+        },
+        Case {
+            id: "drain-grace-ignored",
+            gate: "journal-durability",
+            tool: None,
+            // `shut_down` waits for the ledger task's answer without its grace.
+            seed: replace(
+                "crates/uaos-runtime/src/state.rs",
+                "            let answered = tokio::time::timeout_at(\n                until.checked_add(LEDGER_DRAIN_GRACE).unwrap_or(until),\n                ledger.shutdown(until),\n            )\n            .await;",
+                "            let answered: Result<_, ()> = Ok(ledger.shutdown(until).await);",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_ledger_task_that_does_not_answer_within_the_grace_is_counted_as_one"],
+            },
+            expect: "a ledger task that did not answer within the grace was not counted",
+        },
+        Case {
+            id: "release-offer-on-first-poll",
+            gate: "test",
+            tool: None,
+            // `release` offers its close only on the first poll.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        held.offered = Some(released);\n        let commands = self.commands.clone();\n        async move {",
+                "        let commands = self.commands.clone();\n        async move {\n            held.offered = Some(released);",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_offered_by_a_future_never_polled_still_lands"],
+            },
+            expect: "a release offered on a future never polled lost its close",
+        },
+        Case {
+            id: "retry-wait-past-deadline",
+            gate: "journal-durability",
+            tool: None,
+            // A close's wait between tries runs past the drain's deadline.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "        tokio::select! {\n            () = tokio::time::sleep_until(wake) => {}\n            Ok(()) = changes.changed() => {}\n        }",
+                "        let _ = (wake, changes);\n        tokio::time::sleep(pause).await;",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_retrying_when_shutdown_begins_ends_at_the_deadline"],
+            },
+            expect: "a retry's wait ran past the drain's deadline",
+        },
+        Case {
+            id: "stopped-refusal-code-lost",
+            gate: "test",
+            tool: None,
+            // Under the stop, a failed release replaces the refusal's code.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            let _released = self.release(held, &Released::Stopped).await;\n            return Err(LedgerCallError::Stopped);",
+                "            return Err(self.release(held, &Released::Stopped).await.err().unwrap_or(LedgerCallError::Stopped));",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "under_the_stop_the_refusal_is_the_stops_whatever_the_release_meets"],
+            },
+            expect: "an execution under the stop was refused with another code",
+        },
+        Case {
+            id: "poisoned-close-reads-not-started",
+            gate: "test",
+            tool: None,
+            // A refusal by the ledger itself carries its code's summary, which says the operation
+            // was not started, for a close too.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "            Self::Ledger(LedgerError::Poisoned | LedgerError::Sink(_)) => {\n                \"The ledger stopped after an earlier write of unknown fate and refuses every write: nothing was \\\n                 recorded for this step, and the next boot settles a reservation still open as estimated.\"\n            }\n            Self::Ledger(LedgerError::Insufficient { .. }) => {\n                \"The budget pool's hard cap holds: the ledger refused this step before writing anything for it.\"\n            }\n            Self::Ledger(_) => \"The ledger refused this step before writing anything for it.\",",
+                "            Self::Ledger(_) => spec.summary,",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_close_refused_by_a_poisoned_ledger_never_reads_as_not_started"],
+            },
+            expect: "a close refused after the execution read as not started",
+        },
+        Case {
+            id: "shutdown-deadline-in-message-ignored",
+            gate: "journal-durability",
+            tool: None,
+            // The task ignores the deadline its shutdown message carries.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                    self.told = Some(deadline);",
+                "                    let _ = deadline;",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--lib", "a_shutdown_message_alone_carries_its_deadline"],
+            },
+            expect: "a task that read the shutdown's message before its shared deadline never ended",
+        },
+        Case {
+            id: "release-retry-dropped",
+            gate: "test",
+            tool: None,
+            // A release refused inside the stop record's pause is given up, not tried again.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                Closed::Done((), appended) => {\n                    self.stats.wrote(&event_type);\n                    self.stats.applied(prepared);\n                    return Ok(appended);\n                }\n                Closed::Retry(_, refused) if self.past_deadline() => {\n                    return Err(LedgerCallError::Unwritten(refused));\n                }\n                Closed::Retry(again, _) => token = again,",
+                "                Closed::Done((), appended) => {\n                    self.stats.wrote(&event_type);\n                    self.stats.applied(prepared);\n                    return Ok(appended);\n                }\n                Closed::Retry(_, refused) if self.past_deadline() => {\n                    return Err(LedgerCallError::Unwritten(refused));\n                }\n                Closed::Retry(_, refused) => return Err(LedgerCallError::Unwritten(refused)),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_release_refused_inside_the_stop_records_pause_is_retried"],
+            },
+            expect: "a release refused inside the pause was not retried",
+        },
+        Case {
+            id: "non-2xx-relay-committed",
+            gate: "test",
+            tool: None,
+            // A relay that completed with any status is committed.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                RelayEnd::Completed if (200..300).contains(&upstream_status) => (",
+                "                RelayEnd::Completed if (200..600).contains(&upstream_status) => (",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--lib", "a_relays_end_decides_its_closing_record"],
+            },
+            expect: "was committed",
+        },
+        Case {
+            id: "client-gone-reason-lost",
+            gate: "test",
+            tool: None,
+            // A relay whose client went away is closed as completed.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                RelayEnd::ClientGone => (usage, types::OP_FAILED, maybe(\"client_gone\", report.usage_final)),",
+                "                RelayEnd::ClientGone => (usage, types::OP_FAILED, maybe(\"completed\", report.usage_final)),",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--lib", "a_relays_end_decides_its_closing_record"],
+            },
+            expect: "a relay whose client went away was not closed as client_gone",
+        },
+        Case {
+            id: "stop-meanwhile-refusal-code-lost",
+            gate: "test",
+            tool: None,
+            // A stop engaged while `op.executing` waits is not taken as the refusal's cause.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                if self.stop.is_engaged() {\n                    let _released = self.release(held, &Released::Stopped).await;\n                    return Err(LedgerCallError::Stopped);\n                }\n                Err(self",
+                "                Err(self",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_stop_engaged_while_op_executing_waits_is_the_refusal"],
+            },
+            expect: "a refusal caused by the stop was not the stop",
+        },
+        Case {
+            id: "draining-refusal-code-lost",
+            gate: "test",
+            tool: None,
+            // During the drain, a failed release replaces the refusal's code.
+            seed: replace(
+                "crates/uaos-runtime/src/ledger_task.rs",
+                "                let _released = self.release_as(held, types::OP_FAILED, \"draining\").await;\n                Err(LedgerCallError::Draining)",
+                "                Err(self\n                    .release_as(held, types::OP_FAILED, \"draining\")\n                    .await\n                    .err()\n                    .unwrap_or(LedgerCallError::Draining))",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "while_draining_the_refusal_is_the_drains_whatever_the_release_meets"],
+            },
+            expect: "an execution refused by the drain was refused with another code",
+        },
+        Case {
+            id: "resolution-without-stuck-accepted",
+            gate: "test",
+            tool: None,
+            // The record pass reads a repair's resolution without the entry-less `op.indeterminate`
+            // it resolves.
+            seed: replace(
+                "crates/uaos-ledger/src/inline.rs",
+                "    if delta.entries.iter().any(|entry| entry.reason.as_str() == STUCK_REPAIR) {",
+                "    if delta.entries.iter().any(|entry| entry.reason.as_str() == STUCK_REPAIR) && seq == u64::MAX {",
+            ),
+            runner: Runner::Program {
+                program: "cargo",
+                args: &["test", "-p", "uaos-runtime", "--test", "ledger_task", "a_repair_without_its_stuck_item_is_refused_by_the_reader"],
+            },
+            expect: "a repair was read without the stuck item it resolves",
         },
         Case {
             id: "json-duplicate-key-unchecked",
@@ -3284,14 +4477,14 @@ criteria = \"safe-to-deploy\"
             tool: None,
             seed: replace(
                 "crates/uaos-runtime/src/state.rs",
-                "self.commands.send(command).await.map_err(|_| StateError::Closed)",
-                "self.commands.try_send(command).map_err(|_| StateError::Closed)",
+                "self.commands.send(command).await.map_err(|_| StateError::NotQueued)",
+                "self.commands.try_send(command).map_err(|_| StateError::NotQueued)",
             ),
             runner: Runner::Program {
                 program: "cargo",
                 args: &["test", "-p", "uaos-runtime", "--test", "state", "a_full_queue_applies_backpressure"],
             },
-            expect: "on an `Err` value: Closed",
+            expect: "on an `Err` value: NotQueued",
         },
         // A refused start drops the actor's timer on the caller's thread, a runtime worker, and
         // dropping a runtime there panics.
@@ -3416,8 +4609,8 @@ criteria = \"safe-to-deploy\"
             tool: None,
             seed: replace(
                 "crates/uaos-runtime/src/state.rs",
-                "        if self.clock.mono().0 < self.stop_retry_at {\n            return match (now, &self.stop_error) {",
-                "        if !now && self.clock.mono().0 < self.stop_retry_at {\n            return match (now, &self.stop_error) {",
+                "        if self.clock.mono().0 < self.stop_retry_at {\n            // Inside the pause nothing touches the journal: the refusal wrote nothing.\n            return match (now, &self.stop_error) {",
+                "        if !now && self.clock.mono().0 < self.stop_retry_at {\n            // Inside the pause nothing touches the journal: the refusal wrote nothing.\n            return match (now, &self.stop_error) {",
             ),
             runner: Runner::Program {
                 program: "cargo",
@@ -3841,8 +5034,8 @@ criteria = \"safe-to-deploy\"
             tool: None,
             seed: replace(
                 "crates/uaos-runtime/src/state.rs",
-                "    admission.drain();\n    let _waited = tokio::time::timeout(deadline, async {\n        while admission.in_flight().0 > 0 {\n            tokio::time::sleep(Duration::from_millis(10)).await;\n        }\n    })\n    .await;\n    let open = admission.in_flight().0;\n    state.shutdown(ShutdownReason::new(by, open)).await\n",
-                "    let report = state.shutdown(ShutdownReason::new(by, admission.in_flight().0)).await;\n    admission.drain();\n    let _waited = tokio::time::timeout(deadline, async {\n        while admission.in_flight().0 > 0 {\n            tokio::time::sleep(Duration::from_millis(10)).await;\n        }\n    })\n    .await;\n    report\n",
+                "    admission.drain();\n    if let Some(ledger) = ledger {\n        ledger.drain();\n    }\n    let _waited = tokio::time::timeout_at(until, async {\n        while admission.in_flight().0 > 0 {\n            tokio::time::sleep(Duration::from_millis(10)).await;\n        }\n    })\n    .await;\n",
+                "    let report = state.shutdown(ShutdownReason::new(by.clone(), admission.in_flight().0)).await;\n    admission.drain();\n    if let Some(ledger) = ledger {\n        ledger.drain();\n    }\n    let _waited = tokio::time::timeout_at(until, async {\n        while admission.in_flight().0 > 0 {\n            tokio::time::sleep(Duration::from_millis(10)).await;\n        }\n    })\n    .await;\n    if report.is_ok() {\n        return report;\n    }\n",
             ),
             runner: Runner::Program {
                 program: "cargo",
@@ -3931,7 +5124,7 @@ criteria = \"safe-to-deploy\"
             tool: None,
             seed: replace(
                 "crates/uaos-runtime/src/state.rs",
-                "        self.record_stop(true)?;\n        // The journal flushes inside an append",
+                "        self.record_stop(true).map_err(|error| match error {\n            StateError::Journal(error) => StateError::StopPending(error),\n            other => other,\n        })?;\n        // The journal flushes inside an append",
                 "        // The journal flushes inside an append",
             ),
             runner: Runner::Program {
@@ -4976,7 +6169,7 @@ criteria = \"safe-to-deploy\"
             gate: "test",
             tool: None,
             // Open reservations are settled at boot, never left open or released.
-            seed: replace("crates/uaos-runtime/src/boot.rs", "        match ledger.recover(&mut sink, &Actor::System) {\n", "        match Ok::<_, uaos_ledger::LedgerError>(uaos_ledger::Recovery::default()) {\n"),
+            seed: replace("crates/uaos-runtime/src/boot.rs", "        match ledger.recover(&mut sink, &Actor::System, &plan) {\n", "        match Ok::<_, uaos_ledger::LedgerError>(uaos_ledger::Recovery::default()) {\n"),
             runner: Runner::Program {
                 program: "cargo",
                 args: &["test", "-p", "uaos-runtime", "--test", "boot", "an_open_reservation_settles_in_full_and_is_never_released"],
@@ -5001,7 +6194,7 @@ criteria = \"safe-to-deploy\"
             tool: None,
             // A crash after the ledger's entries still closes every intent on the next boot. Only
             // the convergence property sees it.
-            seed: replace("crates/uaos-runtime/src/boot.rs", "    let intents = open_intents(records);\n", "    let intents = if recovery.settled_estimated + recovery.completed > 0 { open_intents(records) } else { Vec::new() };\n"),
+            seed: replace("crates/uaos-runtime/src/boot.rs", "    for intent in intents.iter().filter(|intent| {\n", "    for intent in intents.iter().filter(|_| recovery.settled_estimated + recovery.completed > 0).filter(|intent| {\n"),
             runner: Runner::Program {
                 program: "cargo",
                 args: &["test", "-p", "uaos-runtime", "--test", "boot", "a_crash_during_boot_converges"],
@@ -5025,7 +6218,7 @@ criteria = \"safe-to-deploy\"
             gate: "test",
             tool: None,
             // Every boot is journaled with its counts (red line 9).
-            seed: replace("crates/uaos-runtime/src/boot.rs", "    journal.append(booted_draft(&report, correlation)?)?;\n", "    let _ = booted_draft(&report, correlation)?;\n"),
+            seed: replace("crates/uaos-runtime/src/boot.rs", "    journal.append(booted_draft(&report, BootCounts::of(&report), correlation)?)?;\n", "    let _ = booted_draft(&report, BootCounts::of(&report), correlation)?;\n"),
             runner: Runner::Program {
                 program: "cargo",
                 args: &["test", "-p", "uaos-runtime", "--test", "boot", "every_boot_is_explained_once"],
@@ -5182,7 +6375,7 @@ criteria = \"safe-to-deploy\"
             gate: "test",
             tool: None,
             // A boot that left an item stuck surfaces.
-            seed: replace("crates/uaos-runtime/src/boot.rs", "        || report.settled_estimated + report.completed + report.transfers_completed + report.stuck.len() > 0\n", "        || report.settled_estimated + report.completed + report.transfers_completed > 0\n"),
+            seed: replace("crates/uaos-runtime/src/boot.rs", "            || self.transfers_completed != 0\n            || self.stuck != 0\n", "            || self.transfers_completed != 0\n"),
             runner: Runner::Program {
                 program: "cargo",
                 args: &["test", "-p", "uaos-runtime", "--lib", "a_boot_that_leaves_an_item_stuck_counts_it_and_surfaces"],

@@ -303,7 +303,7 @@ async fn one_operation_sends_once_and_only_its_own_request() {
     door.send(op(1), request(op(1), "mock"), None).await.unwrap();
     assert_eq!(
         door.send(op(1), request(op(1), "mock"), None).await.unwrap_err(),
-        EgressError::Refused("the Operation already sent a request")
+        EgressError::AlreadySent
     );
     assert_eq!(
         door.send(op(2), request(op(3), "mock"), None).await.unwrap_err(),

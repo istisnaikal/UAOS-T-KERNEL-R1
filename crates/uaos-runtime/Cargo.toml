@@ -19,6 +19,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 uaos-contracts.workspace = true
+# The door's verdict on what left, which decides how a reservation closes. The runtime still opens
+# no socket itself.
+uaos-egress.workspace = true
 uaos-json.workspace = true
 uaos-ledger.workspace = true
 uaos-module-api.workspace = true

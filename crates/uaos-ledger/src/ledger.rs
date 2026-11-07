@@ -2,11 +2,18 @@
 
 //! The ledger writer: turns budget operations into recorded entries.
 //!
-//! Every entry is recorded through a [`LedgerSink`] (normally the journal) **before** the
-//! in-memory state changes, so a reservation is durable before the Operation it pays for can
-//! execute. If recording fails, the ledger refuses further work until it is rebuilt from the
-//! journal: the entry may or may not have reached the journal, and guessing would let memory and
-//! truth diverge.
+//! Every write has two phases (intent contract). `prepare_*` computes the write's entries against
+//! the state, runs every check, and changes nothing: it returns a [`Batch`]. The caller journals
+//! the batch's entries (an Operation's record carries them as a compact delta, [`Batch::delta`])
+//! and only after the journal's acknowledgement does [`Ledger::apply`] change the state, so a
+//! reservation is durable before the Operation it pays for can execute. A refusal that wrote
+//! nothing [`Ledger::withdraw`]s the batch and hands its token back; an error whose fate is unknown
+//! [`Ledger::abandon`]s it, and the ledger refuses all work until it is rebuilt from the journal:
+//! the record may or may not have landed, and guessing would let memory and truth diverge. One
+//! batch is outstanding at a time.
+//!
+//! The synchronous [`LedgerSink`] methods (`allocate`, `reserve`, `release`, `settle`,
+//! `transfer`, `recover`) are the same batches, recorded entry by entry through the sink.
 //!
 //! Reservations are typestate tokens. A [`Reservation<Held>`] may be released; once execution
 //! starts, [`Reservation::begin`] turns it into a [`Reservation<InFlight>`], which can only be
@@ -18,21 +25,26 @@
 //! A token that is dropped leaves its reservation open and held: the money stays unavailable
 //! until the next start. A ledger rebuilt from the journal ([`Ledger::replay`]) refuses new work
 //! until [`Ledger::recover`] has closed what the previous run left open: unsettled reservations
-//! are settled at the full reserved amount, marked `estimated`, never released.
+//! are settled at the full reserved amount, marked `estimated`, never released. What recovery
+//! cannot close is a [`StuckItem`]; the ledger keeps refusing new work until a human repairs every
+//! one ([`Ledger::prepare_repair`]).
 //!
 //! Limitation stated plainly: the journal does not yet record *when* execution began, so a replayed
 //! ledger cannot tell a held reservation from an in-flight one. That is why recovery never
 //! releases. The runtime journals the start of execution in P3.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
 
 use uaos_contracts::budget::{BudgetTx, BudgetTxKind, BudgetTxSchema, IdempotencyKey, ReasonCode};
 use uaos_contracts::event::Actor;
-use uaos_contracts::id::{PoolId, ReservationId};
+use uaos_contracts::id::{OperationId, PoolId, ReservationId};
 use uaos_contracts::money::NanoUsd;
 
-use crate::state::{LedgerError, LedgerState, transfer_in_key};
+use crate::inline::{CompactError, LedgerDelta, STUCK_REPAIR, compact};
+use crate::plan::RecoveryPlan;
+use crate::state::{LedgerError, LedgerState, Undo, transfer_in_key, transfer_return_key};
 
 /// Where entries are recorded durably.
 pub trait LedgerSink {
@@ -139,6 +151,8 @@ pub struct Recovery {
     /// Items that could not be closed, with the reason (an S2 condition). While any remain, the
     /// ledger keeps refusing new work.
     pub stuck: Vec<String>,
+    /// The same items, typed: what a repair names.
+    pub stuck_items: Vec<StuckItem>,
 }
 
 /// A closing call (`release`, `settle`) that failed.
@@ -186,13 +200,44 @@ impl<S> From<CloseError<S>> for LedgerError {
 pub struct Ledger {
     state: LedgerState,
     poisoned: bool,
-    /// Rebuilt from the journal and not yet recovered.
-    replayed: bool,
+    /// Whether new work is accepted, or the ledger waits for its recovery or its repairs.
+    phase: Phase,
+    /// A batch is prepared and not yet applied, withdrawn or abandoned.
+    batch_outstanding: bool,
+    /// What recovery could not close, until a human repairs it.
+    stuck: Vec<StuckItem>,
+    /// For each stuck one-record reservation, the Operation whose intent established it: its repair
+    /// is that Operation's resolution record.
+    resolves: BTreeMap<ReservationId, OperationId>,
+    /// While a rehearsal runs: what each applied entry changed, to put back afterwards.
+    undo_log: Option<Vec<Undo>>,
+}
+
+/// Where a ledger stands between its rebuild and new work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Phase {
+    /// New work is accepted.
+    #[default]
+    Live,
+    /// Rebuilt from the journal; `recover` has not run.
+    Replayed,
+    /// Recovered, with items stuck: new work waits until a human repairs every one.
+    Stuck,
 }
 
 /// Suffixes and prefixes the ledger derives keys with. Caller keys may not use them, so a
 /// caller can never collide with an entry the ledger writes for itself.
-const DERIVED_SUFFIXES: [&str; 5] = [":in", ":reserve", ":release", ":settle", ":overrun"];
+const DERIVED_SUFFIXES: [&str; 9] = [
+    ":in",
+    ":return",
+    ":reserve",
+    ":release",
+    ":settle",
+    ":overrun",
+    ":repair_release",
+    ":repair_settle",
+    ":repair_overrun",
+];
 const DERIVED_PREFIX: &str = "rsv_";
 
 fn caller_key(key: IdempotencyKey) -> Result<IdempotencyKey, LedgerError> {
@@ -215,7 +260,7 @@ fn reason(code: &str) -> Result<ReasonCode, LedgerError> {
 /// An entry ready to record, or the one an idempotent retry already recorded.
 enum Prepared {
     New(BudgetTx),
-    Recorded(BudgetTx),
+    Recorded,
 }
 
 /// What a settlement charges: reported usage, or the reserved amount marked estimated.
@@ -259,6 +304,316 @@ struct Draft {
     estimated: bool,
 }
 
+/// An item recovery could not close: it keeps the ledger refusing new work until a human repairs
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StuckItem {
+    /// What is stuck.
+    pub kind: StuckKind,
+    /// Why recovery could not close it: a reason code, never free text, never an amount.
+    pub reason: ReasonCode,
+}
+
+/// What a [`StuckItem`] names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StuckKind {
+    /// A reservation still open.
+    Reservation(ReservationId),
+    /// A transfer whose second half is not recorded, by its `transfer_out` key.
+    Transfer(IdempotencyKey),
+}
+
+impl fmt::Display for StuckItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            StuckKind::Reservation(id) => write!(f, "reservation {id}: {}", self.reason.as_str()),
+            StuckKind::Transfer(key) => write!(f, "transfer {}: {}", key.as_str(), self.reason.as_str()),
+        }
+    }
+}
+
+/// How a human repairs a stuck item. Every entry carries reason `stuck_repair` and a key of its
+/// own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repair {
+    /// Settle a stuck reservation at `amount`: `[settle]`, or with the remainder's release or the
+    /// overrun's adjust. `outcome` is the record a one-record Operation's resolution is.
+    Settle {
+        /// The spend the human records.
+        amount: NanoUsd,
+        /// `op.committed` or `op.failed` for a one-record Operation.
+        outcome: RepairOutcome,
+    },
+    /// Release what a stuck reservation still holds.
+    Release,
+    /// Record the `transfer_in` recovery would have written (`<out>:in`).
+    CompleteTransfer,
+    /// Return a stuck transfer to its source (`<out>:return`).
+    ReturnTransfer,
+}
+
+/// The resolution record a one-record Operation's repair is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairOutcome {
+    /// `op.committed` (`ResolveCommitted`).
+    Committed,
+    /// `op.failed` (`ResolveFailed`).
+    Failed,
+}
+
+/// One ledger write, prepared and not applied: its entries were computed against the state and
+/// checked, and nothing changed. The caller journals them, then [`Ledger::apply`]s the batch after
+/// the acknowledgement, [`Ledger::withdraw`]s it after a refusal that wrote nothing, or
+/// [`Ledger::abandon`]s it when the fate is unknown. While a batch is outstanding the ledger
+/// prepares nothing else; dropping one without ending it leaves the ledger refusing work.
+#[must_use = "a batch must be applied, withdrawn or abandoned; the ledger prepares nothing else until then"]
+#[derive(Debug)]
+pub struct Batch<T> {
+    entries: Vec<BudgetTx>,
+    applied: usize,
+    then: T,
+}
+
+impl<T> Batch<T> {
+    /// The entries, in the order they apply: one `budget.entry` record each, for a write that is
+    /// not an Operation's.
+    #[must_use]
+    pub fn entries(&self) -> &[BudgetTx] {
+        &self.entries
+    }
+
+    /// The compact delta an Operation's record carries: the only way entries leave the ledger for
+    /// an Operation record.
+    ///
+    /// # Errors
+    /// [`CompactError`] if the entries cannot travel as a delta (an empty batch, a write that is
+    /// not an Operation's).
+    pub fn delta(&self) -> Result<LedgerDelta, CompactError> {
+        let actor = self
+            .entries
+            .first()
+            .map(|tx| tx.principal.clone())
+            .ok_or(CompactError::Count)?;
+        compact(&self.entries, &actor)
+    }
+}
+
+/// What a batch gives back when applied or withdrawn.
+pub trait Closes: sealed::Sealed {
+    /// What [`Ledger::apply`] returns.
+    type Output;
+    /// What [`Ledger::withdraw`] returns.
+    type Withdrawn;
+    #[doc(hidden)]
+    fn output(self) -> Self::Output;
+    #[doc(hidden)]
+    fn withdrawn(self) -> Self::Withdrawn;
+    #[doc(hidden)]
+    fn repaired(&self) -> Option<&StuckItem> {
+        None
+    }
+}
+
+/// A batch journaled as several records, one `budget.entry` per entry: applied record by record
+/// with [`Ledger::apply_step`].
+pub trait Steps: Closes {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A reservation, prepared: [`Ledger::apply`] gives its token.
+#[derive(Debug)]
+pub struct Reserve(Reservation<Held>);
+/// A release, prepared: withdrawn, it gives the token back (none for recovery's).
+#[derive(Debug)]
+pub struct Release(Option<Reservation<Held>>);
+/// A settlement, prepared: applied, it gives the [`Settlement`]; withdrawn, the token back.
+#[derive(Debug)]
+pub struct Settle {
+    token: Option<Reservation<InFlight>>,
+    settlement: Settlement,
+}
+/// An allocation, prepared.
+#[derive(Debug)]
+pub struct Allocate;
+/// A transfer, prepared: two records.
+#[derive(Debug)]
+pub struct Transfer;
+/// A repair, prepared: applied, its item leaves the stuck set.
+#[derive(Debug)]
+pub struct Repaired(StuckItem);
+/// Recovery's own closes, recorded through the sink at boot.
+#[derive(Debug)]
+struct Recovered;
+
+impl sealed::Sealed for Reserve {}
+impl sealed::Sealed for Release {}
+impl sealed::Sealed for Settle {}
+impl sealed::Sealed for Allocate {}
+impl sealed::Sealed for Transfer {}
+impl sealed::Sealed for Repaired {}
+impl sealed::Sealed for Recovered {}
+
+impl Closes for Reserve {
+    type Output = Reservation<Held>;
+    type Withdrawn = ();
+    fn output(self) -> Self::Output {
+        self.0
+    }
+    fn withdrawn(self) {}
+}
+
+impl Closes for Release {
+    type Output = ();
+    type Withdrawn = Option<Reservation<Held>>;
+    fn output(self) {}
+    fn withdrawn(self) -> Self::Withdrawn {
+        self.0
+    }
+}
+
+impl Closes for Settle {
+    type Output = Settlement;
+    type Withdrawn = Option<Reservation<InFlight>>;
+    fn output(self) -> Self::Output {
+        self.settlement
+    }
+    fn withdrawn(self) -> Self::Withdrawn {
+        self.token
+    }
+}
+
+impl Closes for Allocate {
+    type Output = ();
+    type Withdrawn = ();
+    fn output(self) {}
+    fn withdrawn(self) {}
+}
+
+impl Closes for Transfer {
+    type Output = ();
+    type Withdrawn = ();
+    fn output(self) {}
+    fn withdrawn(self) {}
+}
+
+impl Closes for Repaired {
+    type Output = ();
+    type Withdrawn = ();
+    fn output(self) {}
+    fn withdrawn(self) {}
+    fn repaired(&self) -> Option<&StuckItem> {
+        Some(&self.0)
+    }
+}
+
+impl Closes for Recovered {
+    type Output = ();
+    type Withdrawn = ();
+    fn output(self) {}
+    fn withdrawn(self) {}
+}
+
+impl Steps for Allocate {}
+impl Steps for Transfer {}
+impl Steps for Repaired {}
+
+/// Whether a settlement's entries are the ledger's own or a repair's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keys {
+    Own,
+    Repair,
+}
+
+impl Keys {
+    const fn suffix(self, own: &'static str, repair: &'static str) -> &'static str {
+        match self {
+            Self::Own => own,
+            Self::Repair => repair,
+        }
+    }
+
+    const fn reason(self, own: &'static str) -> &'static str {
+        match self {
+            Self::Own => own,
+            Self::Repair => STUCK_REPAIR,
+        }
+    }
+}
+
+/// A settlement's drafts, and what it charges (the ledger's sequence: `[settle]`, then the
+/// remainder's release or the overrun's adjust).
+fn settlement_drafts(
+    id: ReservationId,
+    pool: PoolId,
+    reserved: NanoUsd,
+    already_settled: Option<NanoUsd>,
+    usage: Usage,
+    keys: Keys,
+) -> Result<(Vec<Draft>, Settlement), LedgerError> {
+    let (actual, estimated) = actual_spend(already_settled, usage, reserved);
+    let mut drafts = Vec::with_capacity(2);
+    if already_settled.is_none() {
+        let mut d = settle_draft(id, pool, reserved, actual, estimated)?;
+        if keys == Keys::Repair {
+            d.key = key(format!("{id}:repair_settle"))?;
+            d.reason = STUCK_REPAIR;
+        }
+        drafts.push(d);
+    }
+    let mut out = Settlement {
+        spent: actual,
+        released: NanoUsd::ZERO,
+        overrun: NanoUsd::ZERO,
+        estimated,
+    };
+    if actual < reserved {
+        let remainder = reserved.checked_sub(actual).ok_or(LedgerError::Overflow)?;
+        drafts.push(Draft {
+            key: key(format!("{id}:{}", keys.suffix("release", "repair_release")))?,
+            pool,
+            kind: BudgetTxKind::Release,
+            amount: remainder,
+            reason: keys.reason("release_remainder"),
+            reservation: Some(id),
+            counterparty: None,
+            settled: true,
+            estimated: false,
+        });
+        out.released = remainder;
+    } else if actual > reserved {
+        let overrun = actual.checked_sub(reserved).ok_or(LedgerError::Overflow)?;
+        drafts.push(Draft {
+            key: key(format!("{id}:{}", keys.suffix("overrun", "repair_overrun")))?,
+            pool,
+            kind: BudgetTxKind::Adjust,
+            amount: NanoUsd::ZERO.checked_sub(overrun).ok_or(LedgerError::Overflow)?,
+            reason: keys.reason("overrun"),
+            reservation: Some(id),
+            counterparty: None,
+            settled: true,
+            estimated: false,
+        });
+        out.overrun = overrun;
+    }
+    Ok((drafts, out))
+}
+
+fn release_draft(id: ReservationId, pool: PoolId, amount: NanoUsd, keys: Keys) -> Result<Draft, LedgerError> {
+    Ok(Draft {
+        key: key(format!("{id}:{}", keys.suffix("release", "repair_release")))?,
+        pool,
+        kind: BudgetTxKind::Release,
+        amount,
+        reason: keys.reason("release"),
+        reservation: Some(id),
+        counterparty: None,
+        settled: true,
+        estimated: false,
+    })
+}
+
 impl Ledger {
     /// Rebuilds a ledger from recorded entries (the journal's `budget.entry` records).
     ///
@@ -271,24 +626,94 @@ impl Ledger {
         }
         Ok(Self {
             state,
-            poisoned: false,
-            replayed: true,
+            phase: Phase::Replayed,
+            ..Self::default()
         })
     }
 
-    /// Whether the ledger was rebuilt and still has to run [`Ledger::recover`].
+    /// Whether the ledger was rebuilt and still has to run [`Ledger::recover`], or recovery left
+    /// an item stuck that no repair has closed yet: new work is refused until it is `false`.
     #[must_use]
     pub fn needs_recovery(&self) -> bool {
-        self.replayed
+        self.phase != Phase::Live
     }
 
-    /// New work is refused while poisoned, and on a rebuilt ledger until recovery has run: a
-    /// replayed ledger may still hold an overrun or a half transfer the cap check must not miss.
+    /// The items recovery could not close, in the order it met them.
+    #[must_use]
+    pub fn stuck(&self) -> &[StuckItem] {
+        &self.stuck
+    }
+
+    /// The Operation a stuck one-record reservation belongs to: its repair is journaled as that
+    /// Operation's resolution record, never as `budget.entry` records. `None` for a two-record
+    /// reservation, a transfer, or an item that is not stuck.
+    #[must_use]
+    pub fn resolution_of(&self, item: &StuckItem) -> Option<OperationId> {
+        // By kind, as `prepare_repair` and `stuck_resolved` match: a listing taken at another time
+        // may give the same item another reason (of E4).
+        match item.kind {
+            StuckKind::Reservation(id) if self.stuck.iter().any(|stuck| stuck.kind == item.kind) => {
+                self.resolves.get(&id).copied()
+            }
+            _ => None,
+        }
+    }
+
+    /// New work is refused while poisoned, and on a rebuilt ledger until recovery has run and no
+    /// item is stuck: a replayed ledger may still hold an overrun or a half transfer the cap check
+    /// must not miss.
     fn ensure_live(&self) -> Result<(), LedgerError> {
         if self.poisoned {
             Err(LedgerError::Poisoned)
-        } else if self.replayed {
+        } else if self.phase != Phase::Live {
             Err(LedgerError::RecoveryRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Boot's token-less closes exist only between replay and recovery.
+    fn ensure_unrecovered(&self) -> Result<(), LedgerError> {
+        if self.phase == Phase::Replayed {
+            Ok(())
+        } else {
+            Err(LedgerError::NotReplayed)
+        }
+    }
+
+    /// Runs `f` on this ledger, then puts back everything it changed: every entry applied, the
+    /// phase, the stuck set, the poison and the outstanding batch. The recovery plan rehearses boot
+    /// this way, without copying the replayed state.
+    pub(crate) fn rehearse<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = (
+            self.phase,
+            self.stuck.clone(),
+            self.resolves.clone(),
+            self.poisoned,
+            self.batch_outstanding,
+        );
+        let outer = self.undo_log.replace(Vec::new());
+        let result = f(self);
+        let log = std::mem::replace(&mut self.undo_log, outer).unwrap_or_default();
+        for undo in log.into_iter().rev() {
+            self.state.undo(undo);
+        }
+        (
+            self.phase,
+            self.stuck,
+            self.resolves,
+            self.poisoned,
+            self.batch_outstanding,
+        ) = saved;
+        result
+    }
+
+    /// One batch at a time, and none on a poisoned ledger.
+    fn ensure_no_batch(&self) -> Result<(), LedgerError> {
+        if self.poisoned {
+            Err(LedgerError::Poisoned)
+        } else if self.batch_outstanding {
+            Err(LedgerError::Pending)
         } else {
             Ok(())
         }
@@ -304,6 +729,12 @@ impl Ledger {
     #[must_use]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+
+    /// Stops the ledger until it is rebuilt from the journal: a record without a batch (such as
+    /// `op.executing`) met an error whose fate is unknown.
+    pub fn poison(&mut self) {
+        self.poisoned = true;
     }
 
     /// Builds the entry for `d` and checks it against the state, recording nothing. For an
@@ -327,7 +758,7 @@ impl Ledger {
                 && previous.settled == d.settled
                 && previous.estimated == d.estimated;
             return if same {
-                Ok(Prepared::Recorded(previous.clone()))
+                Ok(Prepared::Recorded)
             } else {
                 Err(LedgerError::KeyConflict(d.key.as_str().to_owned()))
             };
@@ -355,26 +786,435 @@ impl Ledger {
         Ok(Prepared::New(tx))
     }
 
-    fn record(&mut self, sink: &mut dyn LedgerSink, principal: &Actor, d: Draft) -> Result<BudgetTx, LedgerError> {
-        match self.prepare(principal, d)? {
-            Prepared::Recorded(tx) => Ok(tx),
-            Prepared::New(tx) => self.commit(sink, tx),
+    /// The new entries for `drafts`, each computed from the state the one before leaves: applied
+    /// tentatively and undone, so the state is as it was whatever happens.
+    fn prepare_entries(&mut self, principal: &Actor, drafts: Vec<Draft>) -> Result<Vec<BudgetTx>, LedgerError> {
+        let mut undos = Vec::with_capacity(drafts.len());
+        let mut entries = Vec::with_capacity(drafts.len());
+        let mut failure = None;
+        for d in drafts {
+            match self.prepare(principal, d) {
+                Ok(Prepared::Recorded) => {}
+                Ok(Prepared::New(tx)) => match self.state.apply_undoable(&tx) {
+                    Ok(undo) => {
+                        undos.extend(undo);
+                        entries.push(tx);
+                    }
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                },
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+        }
+        for undo in undos.into_iter().rev() {
+            self.state.undo(undo);
+        }
+        failure.map_or(Ok(entries), Err)
+    }
+
+    /// Prepares a batch: one at a time, none on a poisoned ledger.
+    fn batch<T>(&mut self, principal: &Actor, drafts: Vec<Draft>, then: T) -> Result<Batch<T>, (LedgerError, T)> {
+        if let Err(e) = self.ensure_no_batch() {
+            return Err((e, then));
+        }
+        match self.prepare_entries(principal, drafts) {
+            Ok(entries) => {
+                self.batch_outstanding = true;
+                Ok(Batch {
+                    entries,
+                    applied: 0,
+                    then,
+                })
+            }
+            Err(e) => Err((e, then)),
         }
     }
 
-    /// Records a prepared entry, then applies it. A recording failure poisons the ledger.
-    fn commit(&mut self, sink: &mut dyn LedgerSink, tx: BudgetTx) -> Result<BudgetTx, LedgerError> {
-        if let Err(e) = sink.record(&tx) {
+    /// Applies one entry the journal acknowledged. If it does not apply, memory no longer matches
+    /// the journal: the ledger is poisoned. Unreachable while `prepare` and `apply` share one rule
+    /// set.
+    fn apply_entry(&mut self, tx: &BudgetTx) {
+        let applied = match self.undo_log.as_mut() {
+            Some(log) => self.state.apply_undoable(tx).map(|undo| log.extend(undo)),
+            None => self.state.apply(tx),
+        };
+        if applied.is_err() {
             self.poisoned = true;
-            return Err(LedgerError::Sink(e));
         }
-        if let Err(e) = self.state.apply(&tx) {
-            // Unreachable while `check` and `apply` share one rule set; if they ever diverge,
-            // memory no longer matches what was recorded.
+    }
+
+    /// Applies the batch after its record was acknowledged: every entry not yet applied, in order.
+    /// A repair's item leaves the stuck set; when the last does, the ledger accepts new work again.
+    pub fn apply<T: Closes>(&mut self, mut batch: Batch<T>) -> T::Output {
+        while !self.poisoned && batch.applied < batch.entries.len() {
+            let tx = batch.entries[batch.applied].clone();
+            self.apply_entry(&tx);
+            batch.applied += 1;
+        }
+        self.batch_outstanding = false;
+        if !self.poisoned
+            && let Some(item) = batch.then.repaired()
+        {
+            self.stuck_resolved(item);
+        }
+        batch.then.output()
+    }
+
+    /// Applies the next record of a batch journaled as several (one `budget.entry` per entry),
+    /// after that record's acknowledgement. [`Ledger::apply`] ends the batch after the last.
+    pub fn apply_step<T: Steps>(&mut self, batch: &mut Batch<T>) {
+        if self.poisoned {
+            return;
+        }
+        if let Some(tx) = batch.entries.get(batch.applied).cloned() {
+            self.apply_entry(&tx);
+            batch.applied += 1;
+        }
+    }
+
+    /// Ends a batch whose record was refused **without being written** (the state handle's own
+    /// verdict): nothing changes, the ledger stays live, and the batch's token comes back.
+    ///
+    /// Only before the batch's first record was acknowledged: once [`Ledger::apply_step`] has
+    /// applied a record, any failure abandons, and a `withdraw` then poisons the ledger as
+    /// [`Ledger::abandon`] does (a transfer whose second record is refused after the first
+    /// landed). Only a batch of several records can be part applied; theirs give back nothing.
+    pub fn withdraw<T: Closes>(&mut self, batch: Batch<T>) -> T::Withdrawn {
+        self.batch_outstanding = false;
+        if batch.applied > 0 {
             self.poisoned = true;
-            return Err(e);
         }
-        Ok(tx)
+        batch.then.withdrawn()
+    }
+
+    /// Ends a batch whose record's fate is unknown: the ledger is poisoned and refuses all new
+    /// work until it is rebuilt from the journal.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "taking the batch by value is the point: it cannot be applied afterwards"
+    )]
+    pub fn abandon<T>(&mut self, batch: Batch<T>) {
+        drop(batch);
+        self.batch_outstanding = false;
+        self.poisoned = true;
+    }
+
+    /// A repair was applied: its item leaves the stuck set, and with the last one the ledger leaves
+    /// the replayed state.
+    fn stuck_resolved(&mut self, item: &StuckItem) {
+        self.stuck.retain(|stuck| stuck.kind != item.kind);
+        if self.stuck.is_empty() {
+            self.phase = Phase::Live;
+        }
+    }
+
+    /// Prepares a reservation of `amount` before an Operation executes. The hard cap: refused with
+    /// [`LedgerError::Insufficient`] if the pool cannot cover it. A reservation identifier is
+    /// single-use ([`LedgerError::ReservationReused`]).
+    ///
+    /// # Errors
+    /// `Pending`, `Insufficient`, `UnknownPool`, `ReservationReused`, or consistency failures.
+    pub fn prepare_reserve(
+        &mut self,
+        pool: PoolId,
+        id: ReservationId,
+        amount: NanoUsd,
+        principal: &Actor,
+    ) -> Result<Batch<Reserve>, LedgerError> {
+        self.ensure_live()?;
+        if self.state.knows_reservation(id) {
+            return Err(LedgerError::ReservationReused(id));
+        }
+        let d = Draft {
+            key: key(format!("{id}:reserve"))?,
+            pool,
+            kind: BudgetTxKind::Reserve,
+            amount,
+            reason: "reserve",
+            reservation: Some(id),
+            counterparty: None,
+            settled: false,
+            estimated: false,
+        };
+        let token = Reservation {
+            id,
+            pool,
+            amount,
+            state: PhantomData,
+        };
+        self.batch(principal, vec![d], Reserve(token)).map_err(|(e, _)| e)
+    }
+
+    /// Prepares the release of a reservation whose execution never started.
+    ///
+    /// # Errors
+    /// [`CloseError::Rejected`], with the token, if it cannot be prepared.
+    pub fn prepare_release(
+        &mut self,
+        reservation: Reservation<Held>,
+        principal: &Actor,
+    ) -> Result<Batch<Release>, CloseError<Held>> {
+        let draft = self
+            .ensure_live()
+            .and_then(|()| release_draft(reservation.id, reservation.pool, reservation.amount, Keys::Own));
+        let d = match draft {
+            Ok(d) => d,
+            Err(error) => return Err(CloseError::Rejected { error, reservation }),
+        };
+        self.batch(principal, vec![d], Release(Some(reservation)))
+            .map_err(|(error, then)| match then.0 {
+                Some(reservation) => CloseError::Rejected { error, reservation },
+                None => CloseError::Failed(error),
+            })
+    }
+
+    /// Prepares the settlement of a reservation whose execution started: the spend, then the
+    /// remainder's release or the overrun's adjust.
+    ///
+    /// # Errors
+    /// [`CloseError::Rejected`], with the token, if it cannot be prepared.
+    pub fn prepare_settle(
+        &mut self,
+        reservation: Reservation<InFlight>,
+        usage: Usage,
+        principal: &Actor,
+    ) -> Result<Batch<Settle>, CloseError<InFlight>> {
+        let drafts = self.ensure_live().and_then(|()| {
+            settlement_drafts(
+                reservation.id,
+                reservation.pool,
+                reservation.amount,
+                None,
+                usage,
+                Keys::Own,
+            )
+        });
+        let (drafts, settlement) = match drafts {
+            Ok(d) => d,
+            Err(error) => return Err(CloseError::Rejected { error, reservation }),
+        };
+        let then = Settle {
+            token: Some(reservation),
+            settlement,
+        };
+        self.batch(principal, drafts, then)
+            .map_err(|(error, then)| match then.token {
+                Some(reservation) => CloseError::Rejected { error, reservation },
+                None => CloseError::Failed(error),
+            })
+    }
+
+    /// Boot, before [`Ledger::recover`]: the settlement of an open reservation at its full amount,
+    /// estimated, without a token, for the `op.indeterminate` that closes its Operation. Only on a
+    /// replayed ledger that has not run its recovery.
+    ///
+    /// # Errors
+    /// `NotReplayed` on a live or recovered ledger, `NotOpen`, `Pending`, or consistency failures.
+    pub fn prepare_recovery_settle(&mut self, id: ReservationId) -> Result<Batch<Settle>, LedgerError> {
+        self.ensure_unrecovered()?;
+        let open = *self.state.open.get(&id).ok_or(LedgerError::NotOpen(id))?;
+        let (drafts, settlement) =
+            settlement_drafts(id, open.pool, open.reserved, open.settled, Usage::Unknown, Keys::Own)?;
+        self.batch(
+            &Actor::System,
+            drafts,
+            Settle {
+                token: None,
+                settlement,
+            },
+        )
+        .map_err(|(e, _)| e)
+    }
+
+    /// Boot, before [`Ledger::recover`]: the release of an open reservation strict mode proves
+    /// unsent, without a token. Only on a replayed ledger that has not run its recovery.
+    ///
+    /// # Errors
+    /// `NotReplayed` on a live or recovered ledger, `NotOpen`, `Pending`, or consistency failures.
+    pub fn prepare_recovery_release(&mut self, id: ReservationId) -> Result<Batch<Release>, LedgerError> {
+        self.ensure_unrecovered()?;
+        let open = *self.state.open.get(&id).ok_or(LedgerError::NotOpen(id))?;
+        if open.settled.is_some() {
+            return Err(LedgerError::Inconsistent(
+                "a partly settled reservation is not released",
+            ));
+        }
+        let d = release_draft(id, open.pool, open.reserved, Keys::Own)?;
+        self.batch(&Actor::System, vec![d], Release(None)).map_err(|(e, _)| e)
+    }
+
+    /// Prepares an allocation (creating the pool on first use): one `budget.entry`.
+    ///
+    /// # Errors
+    /// `Pending`, a reserved key, or consistency failures.
+    pub fn prepare_allocate(
+        &mut self,
+        pool: PoolId,
+        amount: NanoUsd,
+        principal: &Actor,
+        idempotency: IdempotencyKey,
+    ) -> Result<Batch<Allocate>, LedgerError> {
+        self.ensure_live()?;
+        let d = Draft {
+            key: caller_key(idempotency)?,
+            pool,
+            kind: BudgetTxKind::Allocate,
+            amount,
+            reason: "allocate",
+            reservation: None,
+            counterparty: None,
+            settled: false,
+            estimated: false,
+        };
+        self.batch(principal, vec![d], Allocate).map_err(|(e, _)| e)
+    }
+
+    /// Prepares a transfer between pools: a `transfer_out` then its `transfer_in`, two
+    /// `budget.entry` records, applied record by record. A transfer whose first half is already
+    /// recorded prepares only the second.
+    ///
+    /// # Errors
+    /// `Pending`, `Insufficient` on the source pool, a reserved or conflicting key, or consistency
+    /// failures.
+    pub fn prepare_transfer(
+        &mut self,
+        from: PoolId,
+        to: PoolId,
+        amount: NanoUsd,
+        principal: &Actor,
+        idempotency: IdempotencyKey,
+    ) -> Result<Batch<Transfer>, LedgerError> {
+        self.ensure_live()?;
+        let idempotency = caller_key(idempotency)?;
+        let in_key = transfer_in_key(&idempotency)?;
+        // Both keys are checked before the first entry is recorded, so a conflict can never
+        // leave money that left one pool without reaching the other.
+        if self.state.entry_for(&idempotency).is_none() && self.state.entry_for(&in_key).is_some() {
+            return Err(LedgerError::KeyConflict(in_key.as_str().to_owned()));
+        }
+        let out = Draft {
+            key: idempotency,
+            pool: from,
+            kind: BudgetTxKind::TransferOut,
+            amount,
+            reason: "transfer",
+            reservation: None,
+            counterparty: Some(to),
+            settled: false,
+            estimated: false,
+        };
+        let incoming = Draft {
+            key: in_key,
+            pool: to,
+            kind: BudgetTxKind::TransferIn,
+            amount,
+            reason: "transfer",
+            reservation: None,
+            counterparty: Some(from),
+            settled: false,
+            estimated: false,
+        };
+        self.batch(principal, vec![out, incoming], Transfer).map_err(|(e, _)| e)
+    }
+
+    /// Prepares a human's repair of a stuck item: only an item recovery left stuck, only by a human
+    /// principal (replay refuses a repair entry any other principal signs). Every entry carries
+    /// reason `stuck_repair` and its own key. Applying it needs the human's presence, through an
+    /// approval channel that is not built yet.
+    ///
+    /// # Errors
+    /// [`LedgerError::NotStuck`] for an item that is not stuck, `Pending`, a repair that does not
+    /// fit the item, or consistency failures.
+    pub fn prepare_repair(
+        &mut self,
+        item: &StuckItem,
+        repair: Repair,
+        principal: &Actor,
+    ) -> Result<Batch<Repaired>, LedgerError> {
+        self.ensure_no_batch()?;
+        if !self.stuck.iter().any(|stuck| stuck.kind == item.kind) {
+            return Err(LedgerError::NotStuck);
+        }
+        let drafts = match (&item.kind, repair) {
+            (StuckKind::Reservation(id), Repair::Settle { amount, .. }) => {
+                let open = *self.state.open.get(id).ok_or(LedgerError::NotOpen(*id))?;
+                if open.settled.is_some_and(|actual| actual != amount) {
+                    return Err(LedgerError::Inconsistent(
+                        "a partly settled reservation's repair settles at its recorded spend",
+                    ));
+                }
+                settlement_drafts(
+                    *id,
+                    open.pool,
+                    open.reserved,
+                    open.settled,
+                    Usage::Reported(amount),
+                    Keys::Repair,
+                )?
+                .0
+            }
+            (StuckKind::Reservation(id), Repair::Release) => {
+                let open = *self.state.open.get(id).ok_or(LedgerError::NotOpen(*id))?;
+                let remaining = match open.settled {
+                    None => open.reserved,
+                    Some(actual) if actual < open.reserved => {
+                        open.reserved.checked_sub(actual).ok_or(LedgerError::Overflow)?
+                    }
+                    Some(_) => return Err(LedgerError::Inconsistent("nothing left to release after an overrun")),
+                };
+                vec![release_draft(*id, open.pool, remaining, Keys::Repair)?]
+            }
+            (StuckKind::Transfer(out), Repair::CompleteTransfer | Repair::ReturnTransfer) => {
+                let pending = *self
+                    .state
+                    .pending
+                    .get(out)
+                    .ok_or(LedgerError::Inconsistent("the transfer is not pending"))?;
+                let (key, pool, counterparty) = if repair == Repair::CompleteTransfer {
+                    (transfer_in_key(out)?, pending.to, pending.from)
+                } else {
+                    (transfer_return_key(out)?, pending.from, pending.to)
+                };
+                vec![Draft {
+                    key,
+                    pool,
+                    kind: BudgetTxKind::TransferIn,
+                    amount: pending.amount,
+                    reason: STUCK_REPAIR,
+                    reservation: None,
+                    counterparty: Some(counterparty),
+                    settled: false,
+                    estimated: false,
+                }]
+            }
+            _ => return Err(LedgerError::Inconsistent("the repair does not fit the stuck item")),
+        };
+        self.batch(principal, drafts, Repaired(item.clone()))
+            .map_err(|(e, _)| e)
+    }
+
+    /// Records a prepared batch through `sink`, entry by entry, and applies it: the sink-based
+    /// path for writes recorded one `budget.entry` at a time. A recording failure poisons.
+    fn commit<T: Closes>(&mut self, sink: &mut dyn LedgerSink, mut batch: Batch<T>) -> Result<T::Output, LedgerError> {
+        while batch.applied < batch.entries.len() {
+            let tx = batch.entries[batch.applied].clone();
+            if let Err(e) = sink.record(&tx) {
+                self.abandon(batch);
+                return Err(LedgerError::Sink(e));
+            }
+            self.apply_entry(&tx);
+            batch.applied += 1;
+            if self.poisoned {
+                self.abandon(batch);
+                return Err(LedgerError::Poisoned);
+            }
+        }
+        Ok(self.apply(batch))
     }
 
     /// Adds money to a pool (creating it on first use).
@@ -389,19 +1229,8 @@ impl Ledger {
         principal: &Actor,
         idempotency: IdempotencyKey,
     ) -> Result<(), LedgerError> {
-        self.ensure_live()?;
-        let d = Draft {
-            key: caller_key(idempotency)?,
-            pool,
-            kind: BudgetTxKind::Allocate,
-            amount,
-            reason: "allocate",
-            reservation: None,
-            counterparty: None,
-            settled: false,
-            estimated: false,
-        };
-        self.record(sink, principal, d).map(|_| ())
+        let batch = self.prepare_allocate(pool, amount, principal, idempotency)?;
+        self.commit(sink, batch)
     }
 
     /// Reserves `amount` before an Operation executes. The hard cap: refused with
@@ -421,28 +1250,8 @@ impl Ledger {
         amount: NanoUsd,
         principal: &Actor,
     ) -> Result<Reservation<Held>, LedgerError> {
-        self.ensure_live()?;
-        if self.state.knows_reservation(id) {
-            return Err(LedgerError::ReservationReused(id));
-        }
-        let d = Draft {
-            key: key(format!("{id}:reserve"))?,
-            pool,
-            kind: BudgetTxKind::Reserve,
-            amount,
-            reason: "reserve",
-            reservation: Some(id),
-            counterparty: None,
-            settled: false,
-            estimated: false,
-        };
-        let tx = self.record(sink, principal, d)?;
-        Ok(Reservation {
-            id,
-            pool: tx.pool_id,
-            amount: tx.amount,
-            state: PhantomData,
-        })
+        let batch = self.prepare_reserve(pool, id, amount, principal)?;
+        self.commit(sink, batch)
     }
 
     /// Returns a reservation whose execution never started.
@@ -476,41 +1285,15 @@ impl Ledger {
     ///
     /// # Errors
     /// Recording or consistency failures.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "taking the token by value is the point: the caller cannot use it again"
-    )]
     pub fn release(
         &mut self,
         sink: &mut dyn LedgerSink,
         reservation: Reservation<Held>,
         principal: &Actor,
     ) -> Result<(), CloseError<Held>> {
-        let prepared = self.ensure_live().and_then(|()| {
-            let id = reservation.id;
-            let d = Draft {
-                key: key(format!("{id}:release"))?,
-                pool: reservation.pool,
-                kind: BudgetTxKind::Release,
-                amount: reservation.amount,
-                reason: "release",
-                reservation: Some(id),
-                counterparty: None,
-                settled: true,
-                estimated: false,
-            };
-            self.prepare(principal, d)
-        });
-        let prepared = match prepared {
-            Ok(p) => p,
-            Err(error) => return Err(CloseError::Rejected { error, reservation }),
-        };
-        // From here on the token is consumed: it can never be released or settled again.
-        drop(reservation);
-        match prepared {
-            Prepared::Recorded(_) => Ok(()),
-            Prepared::New(tx) => self.commit(sink, tx).map(|_| ()).map_err(CloseError::Failed),
-        }
+        let batch = self.prepare_release(reservation, principal)?;
+        // From here on the token is in the batch: it can never be released or settled again.
+        self.commit(sink, batch).map_err(CloseError::Failed)
     }
 
     /// Settles a reservation whose execution started: records the spend, then returns the
@@ -518,10 +1301,6 @@ impl Ledger {
     ///
     /// # Errors
     /// Recording or consistency failures.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "taking the token by value is the point: the caller cannot use it again"
-    )]
     pub fn settle(
         &mut self,
         sink: &mut dyn LedgerSink,
@@ -529,74 +1308,8 @@ impl Ledger {
         usage: Usage,
         principal: &Actor,
     ) -> Result<Settlement, CloseError<InFlight>> {
-        // Everything that can refuse the first entry is checked before the token is consumed.
-        let precheck = self.ensure_live().and_then(|()| {
-            let (actual, estimated) = actual_spend(None, usage, reservation.amount);
-            let d = settle_draft(reservation.id, reservation.pool, reservation.amount, actual, estimated)?;
-            self.prepare(principal, d).map(|_| ())
-        });
-        if let Err(error) = precheck {
-            return Err(CloseError::Rejected { error, reservation });
-        }
-        let Reservation { id, pool, amount, .. } = reservation;
-        self.settle_open(sink, id, pool, amount, None, usage, principal)
-            .map_err(CloseError::Failed)
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "internal: one call site per recovery path")]
-    fn settle_open(
-        &mut self,
-        sink: &mut dyn LedgerSink,
-        id: ReservationId,
-        pool: PoolId,
-        reserved: NanoUsd,
-        already_settled: Option<NanoUsd>,
-        usage: Usage,
-        principal: &Actor,
-    ) -> Result<Settlement, LedgerError> {
-        let (actual, estimated) = actual_spend(already_settled, usage, reserved);
-        if already_settled.is_none() {
-            let d = settle_draft(id, pool, reserved, actual, estimated)?;
-            self.record(sink, principal, d)?;
-        }
-        let mut out = Settlement {
-            spent: actual,
-            released: NanoUsd::ZERO,
-            overrun: NanoUsd::ZERO,
-            estimated,
-        };
-        if actual < reserved {
-            let remainder = reserved.checked_sub(actual).ok_or(LedgerError::Overflow)?;
-            let d = Draft {
-                key: key(format!("{id}:release"))?,
-                pool,
-                kind: BudgetTxKind::Release,
-                amount: remainder,
-                reason: "release_remainder",
-                reservation: Some(id),
-                counterparty: None,
-                settled: true,
-                estimated: false,
-            };
-            self.record(sink, principal, d)?;
-            out.released = remainder;
-        } else if actual > reserved {
-            let overrun = actual.checked_sub(reserved).ok_or(LedgerError::Overflow)?;
-            let d = Draft {
-                key: key(format!("{id}:overrun"))?,
-                pool,
-                kind: BudgetTxKind::Adjust,
-                amount: NanoUsd::ZERO.checked_sub(overrun).ok_or(LedgerError::Overflow)?,
-                reason: "overrun",
-                reservation: Some(id),
-                counterparty: None,
-                settled: true,
-                estimated: false,
-            };
-            self.record(sink, principal, d)?;
-            out.overrun = overrun;
-        }
-        Ok(out)
+        let batch = self.prepare_settle(reservation, usage, principal)?;
+        self.commit(sink, batch).map_err(CloseError::Failed)
     }
 
     /// Moves money between pools: a `TransferOut` then its paired `TransferIn`. If the process
@@ -613,76 +1326,64 @@ impl Ledger {
         principal: &Actor,
         idempotency: IdempotencyKey,
     ) -> Result<(), LedgerError> {
-        self.ensure_live()?;
-        let idempotency = caller_key(idempotency)?;
-        let in_key = transfer_in_key(&idempotency)?;
-        // Both keys are checked before the first entry is recorded, so a conflict can never
-        // leave money that left one pool without reaching the other.
-        if self.state.entry_for(&idempotency).is_none() && self.state.entry_for(&in_key).is_some() {
-            return Err(LedgerError::KeyConflict(in_key.as_str().to_owned()));
-        }
-        let out = Draft {
-            key: idempotency,
-            pool: from,
-            kind: BudgetTxKind::TransferOut,
-            amount,
-            reason: "transfer",
-            reservation: None,
-            counterparty: Some(to),
-            settled: false,
-            estimated: false,
-        };
-        self.record(sink, principal, out)?;
-        let incoming = Draft {
-            key: in_key,
-            pool: to,
-            kind: BudgetTxKind::TransferIn,
-            amount,
-            reason: "transfer",
-            reservation: None,
-            counterparty: Some(from),
-            settled: false,
-            estimated: false,
-        };
-        self.record(sink, principal, incoming).map(|_| ())
+        let batch = self.prepare_transfer(from, to, amount, principal, idempotency)?;
+        self.commit(sink, batch)
     }
 
-    /// On a ledger rebuilt from the journal, closes everything the previous run left open:
-    /// unsettled reservations are settled at their full reserved amount, marked estimated, and
-    /// never released; partially settled reservations get their closing entry; half-recorded
-    /// transfers are completed. An item that cannot be closed is reported in [`Recovery::stuck`]
-    /// and the others are still processed; the ledger then keeps refusing new work.
+    /// On a ledger rebuilt from the journal, closes what the previous run left open, after boot has
+    /// closed each open one-record Operation in its own record: unsettled reservations are settled
+    /// at their full reserved amount, marked estimated, and never released; partially settled
+    /// reservations get their closing entry; half-recorded transfers are completed. **A reservation
+    /// a one-record intent established is never touched**: it closes only in its Operation's
+    /// records, so one still open must be a stuck item the plan lists. An item that cannot be
+    /// closed is reported in [`Recovery::stuck`] and the others are still processed; the ledger
+    /// stays replayed, refusing new work, while the plan or this recovery lists any stuck item.
+    /// `RecoveryPlan::default()` is the plan of a journal with no one-record intent.
     ///
     /// Boot-only: in a running process reservations are closed through their tokens, and a
     /// recovery could settle a reservation whose token is still live.
     ///
     /// # Errors
-    /// [`LedgerError::NotReplayed`] on a live ledger with open items; recording failures (the
-    /// ledger is then poisoned).
-    pub fn recover(&mut self, sink: &mut dyn LedgerSink, principal: &Actor) -> Result<Recovery, LedgerError> {
-        if self.poisoned {
-            return Err(LedgerError::Poisoned);
-        }
+    /// [`LedgerError::NotReplayed`] on a live ledger with open items; `Pending`;
+    /// [`LedgerError::Inconsistent`], before anything is recorded, for a one-record reservation
+    /// still open that the plan does not list as stuck; recording failures (the ledger is then
+    /// poisoned).
+    pub fn recover(
+        &mut self,
+        sink: &mut dyn LedgerSink,
+        principal: &Actor,
+        plan: &RecoveryPlan,
+    ) -> Result<Recovery, LedgerError> {
+        self.ensure_no_batch()?;
         let nothing_open = self.state.open.is_empty() && self.state.pending.is_empty();
-        if !self.replayed && !nothing_open {
+        if self.phase == Phase::Live && !nothing_open {
             return Err(LedgerError::NotReplayed);
         }
+        let unclosed = self
+            .state
+            .open
+            .keys()
+            .any(|id| plan.is_one_record(*id) && !plan.lists_stuck(&StuckKind::Reservation(*id)));
+        if unclosed {
+            return Err(LedgerError::Inconsistent(
+                "a one-record Operation is still open: boot closes it in its own record first",
+            ));
+        }
         let mut report = Recovery::default();
-        let mut stuck = |what: String, e: LedgerError| -> Result<(), LedgerError> {
-            match e {
-                LedgerError::Sink(_) | LedgerError::Poisoned => Err(e),
-                other => {
-                    report.stuck.push(format!("{what}: {other}"));
-                    Ok(())
-                }
-            }
-        };
-        let open: Vec<_> = self.state.open.iter().map(|(id, o)| (*id, *o)).collect();
+        let open: Vec<_> = self
+            .state
+            .open
+            .iter()
+            .filter(|(id, _)| !plan.is_one_record(**id))
+            .map(|(id, o)| (*id, *o))
+            .collect();
         for (id, o) in open {
-            match self.settle_open(sink, id, o.pool, o.reserved, o.settled, Usage::Unknown, principal) {
-                Ok(_) if o.settled.is_some() => report.completed += 1,
-                Ok(_) => report.settled_estimated += 1,
-                Err(e) => stuck(format!("reservation {id}"), e)?,
+            let result = settlement_drafts(id, o.pool, o.reserved, o.settled, Usage::Unknown, Keys::Own)
+                .and_then(|(drafts, _)| self.record_now(sink, principal, drafts));
+            match result {
+                Ok(()) if o.settled.is_some() => report.completed += 1,
+                Ok(()) => report.settled_estimated += 1,
+                Err(e) => report.stuck_on(StuckKind::Reservation(id), &format!("reservation {id}"), e)?,
             }
         }
         let pending: Vec<_> = self.state.pending.iter().map(|(k, p)| (k.clone(), *p)).collect();
@@ -699,16 +1400,61 @@ impl Ledger {
                     settled: false,
                     estimated: false,
                 };
-                self.record(sink, principal, d)
+                self.record_now(sink, principal, vec![d])
             });
             match result {
-                Ok(_) => report.transfers_completed += 1,
-                Err(e) => stuck(format!("transfer {}", out_key.as_str()), e)?,
+                Ok(()) => report.transfers_completed += 1,
+                Err(e) => report.stuck_on(
+                    StuckKind::Transfer(out_key.clone()),
+                    &format!("transfer {}", out_key.as_str()),
+                    e,
+                )?,
             }
         }
-        if report.stuck.is_empty() {
-            self.replayed = false;
-        }
+        self.stuck = plan.one_record_stuck().to_vec();
+        self.resolves = self
+            .stuck
+            .iter()
+            .filter_map(|item| match item.kind {
+                StuckKind::Reservation(id) => plan.operation_of(id).map(|operation| (id, operation)),
+                StuckKind::Transfer(_) => None,
+            })
+            .collect();
+        self.stuck.extend(report.stuck_items.iter().cloned());
+        self.phase = if self.stuck.is_empty() {
+            Phase::Live
+        } else {
+            Phase::Stuck
+        };
         Ok(report)
+    }
+
+    /// Prepares `drafts`, records them through `sink` and applies them, in recovery (no batch is
+    /// left outstanding).
+    fn record_now(
+        &mut self,
+        sink: &mut dyn LedgerSink,
+        principal: &Actor,
+        drafts: Vec<Draft>,
+    ) -> Result<(), LedgerError> {
+        let batch = self.batch(principal, drafts, Recovered).map_err(|(e, _)| e)?;
+        self.commit(sink, batch)
+    }
+}
+
+impl Recovery {
+    /// Records a stuck item, or passes on a recording failure, which stops recovery.
+    fn stuck_on(&mut self, kind: StuckKind, what: &str, e: LedgerError) -> Result<(), LedgerError> {
+        match e {
+            LedgerError::Sink(_) | LedgerError::Poisoned => Err(e),
+            other => {
+                self.stuck.push(format!("{what}: {other}"));
+                self.stuck_items.push(StuckItem {
+                    kind,
+                    reason: ReasonCode::new(other.reason_code()).map_err(LedgerError::Invalid)?,
+                });
+                Ok(())
+            }
+        }
     }
 }

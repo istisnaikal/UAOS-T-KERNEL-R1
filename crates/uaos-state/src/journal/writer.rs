@@ -660,6 +660,12 @@ impl Journal {
         self.sync()
     }
 
+    /// The policy acknowledged records are flushed under.
+    #[must_use]
+    pub const fn flush_policy(&self) -> FlushPolicy {
+        self.flush
+    }
+
     /// Next sequence number to be assigned.
     #[must_use]
     pub fn next_seq(&self) -> Seq {

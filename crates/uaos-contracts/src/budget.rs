@@ -274,6 +274,61 @@ impl BudgetTx {
     }
 }
 
+/// Version of the compact ledger delta (`"v"`). A reader refuses any other as unreadable: it may
+/// come from a newer kernel (intent contract E7).
+pub const LEDGER_DELTA_VERSION: u32 = 1;
+
+/// The compact ledger delta an Operation's record carries in its inline payload under `ledger`
+/// (E1): the pool, the reservation, and per entry only what varies. Every other field of a
+/// `uaos.budget_tx/1` entry follows from the record and the ledger's derived keys;
+/// `uaos_ledger::inline` compacts and expands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(
+    title = "uaos.op_ledger/1",
+    description = "The compact ledger delta inside an Operation record's inline payload, under `ledger`."
+)]
+pub struct LedgerDelta {
+    /// Version, [`LEDGER_DELTA_VERSION`].
+    pub v: u32,
+    /// The pool every entry changes.
+    pub pool: PoolId,
+    /// The Operation's reservation, which every entry names.
+    pub reservation: ReservationId,
+    /// The entries, in the order the ledger applies them: at most two.
+    pub entries: Vec<DeltaEntry>,
+}
+
+/// One entry of a [`LedgerDelta`]: only what varies from entry to entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeltaEntry {
+    /// Kind of entry: `reserve`, `settle`, `release` or `adjust` in an Operation's record.
+    pub kind: BudgetTxKind,
+    /// Amount (negative only for `adjust`).
+    pub amount: NanoUsd,
+    /// Available balance before the entry.
+    pub before: NanoUsd,
+    /// Available balance after the entry.
+    pub after: NanoUsd,
+    /// Why the entry exists.
+    pub reason: ReasonCode,
+    /// Whether the reservation is fully settled; written only when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub settled: bool,
+    /// Whether the amount is an estimate; written only when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub estimated: bool,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

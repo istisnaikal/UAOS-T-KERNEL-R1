@@ -6,6 +6,45 @@ versions follow [Semantic Versioning](https://semver.org). A change to a contrac
 
 ## [Unreleased]
 
+### The one-record intent: an Operation's money in its own records
+
+- **One record per transition that moves money.** An Operation's reservation travels inline in
+  its `op.reserved_intent` record, as a compact `ledger` delta (new schema `uaos.op_ledger/1`,
+  `schemas/op-ledger.v1.json`). The record that closes it (`op.committed`, `op.failed` or
+  `op.denied`) carries the closing entries. A crash between two records can no longer leave the
+  money without its Operation, or the Operation without its money. Journals written in the
+  earlier two-record form still read.
+- **The reader** checks every record against these rules before boot uses it. It refuses a
+  journal that breaks one with `BUDGET_ENTRIES_UNREADABLE`, naming the first record.
+- **Boot** closes an Operation left open in that Operation's own `op.indeterminate` record,
+  settled in full as estimated, and says whether `op.executing` was recorded. What recovery
+  cannot close is a stuck item: counted in `kernel.booted`, listed, and holding the ledger until
+  a person repairs it. A repair needs that person's approval, which has no command yet, so
+  repairs run only in tests.
+- **The ledger task** (`uaos-runtime`) is the ledger's one ordered writer:
+  - `reserve` returns a `Held` token only after the intent is acknowledged;
+  - `execute` journals `op.executing` and checks the stop before and after it, and only then
+    returns the `InFlight` token a door call needs;
+  - closes are typed (`Released`, `Settled`). Once offered, a close is the task's and lands even
+    if its caller is cancelled, and a token dropped without a close is closed by the task;
+  - every channel is bounded: with no free slot, `reserve` is refused as `RUNTIME_OVERLOAD`
+    before anything is written;
+  - a close refused while an engaged stop's record cannot land is tried again, and a write of
+    unknown fate poisons the ledger and stops the kernel;
+  - shutdown drains the task first and counts in `kernel.shutdown` what it left open;
+  - a refusal's wire error names the Operation and its reservation, never an amount, with an
+    agent message true for every call that can meet it;
+  - an upstream name is a token of letters, digits, `.`, `_` and `-`, so a URL is refused.
+- **APIs:**
+  - `uaos-egress`: `EgressError::may_have_sent()` and `EgressError::kind()`, and a variant
+    `AlreadySent`, split from `Refused`;
+  - the state actor: `StateError::NotQueued` and `StateError::StopPending`, and
+    `StateHandle::flush_policy()`. A queue capacity past a bounded channel's limit is clamped.
+- **Measured** with `cargo bench -p uaos-runtime --bench state_actor` (5,000 Operations, on a
+  cloud host): `reserve` p50 86.3 µs and p99 172.5 µs; `execute` p50 72.0 µs and p99 144.5 µs.
+- **Proof:** tests pin each of these behaviours, most with a seeded violation that shows the
+  test fails without it.
+
 ### The seeded-violation suite: three cases that proved nothing
 
 - The merge lane's `negative` job failed on the previous two updates: three seeded violations

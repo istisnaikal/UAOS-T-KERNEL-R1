@@ -93,6 +93,10 @@ pub enum EgressError {
     /// The door's own rules refused the request before any contact.
     #[error("refused by the egress door: {0}")]
     Refused(&'static str),
+    /// The Operation already sent a request: this one was refused before any contact, but the
+    /// earlier one may have left.
+    #[error("refused by the egress door: the Operation already sent a request")]
+    AlreadySent,
     /// An upstream declaration is invalid.
     #[error("invalid upstream: {0}")]
     Upstream(UpstreamError),
@@ -110,10 +114,46 @@ impl EgressError {
             Self::Unreachable(_) => codes::EGRESS_UNREACHABLE,
             Self::Timeout => codes::EGRESS_TIMEOUT,
             Self::CircuitOpen { .. } => codes::EGRESS_CIRCUIT_OPEN,
-            Self::Refused(_) => codes::EGRESS_REFUSED,
+            Self::Refused(_) | Self::AlreadySent => codes::EGRESS_REFUSED,
             Self::Interrupted(_) => codes::EGRESS_INTERRUPTED,
             Self::Unusable(_) => codes::EGRESS_UNUSABLE_RESPONSE,
             Self::Upstream(_) | Self::Tls(_) | Self::Limits(_) => codes::CONFIG_INVALID,
+        }
+    }
+
+    /// Whether a byte of the Operation's request may have reached the provider: the door's own
+    /// verdict, which decides how the Operation's reservation closes. An exhaustive match, so a new
+    /// variant must be classified here.
+    #[must_use]
+    pub const fn may_have_sent(&self) -> bool {
+        match self {
+            Self::Blocked(_)
+            | Self::Unreachable(_)
+            | Self::Timeout
+            | Self::Limits(_)
+            | Self::CircuitOpen { .. }
+            | Self::Refused(_)
+            | Self::Upstream(_)
+            | Self::Tls(_) => false,
+            Self::Interrupted(_) | Self::Unusable(_) | Self::AlreadySent => true,
+        }
+    }
+
+    /// The reason code a closing record carries for this failure (`[a-z0-9_]`).
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Blocked(_) => "blocked",
+            Self::Unreachable(_) => "unreachable",
+            Self::Timeout => "timeout",
+            Self::Interrupted(_) => "interrupted",
+            Self::Unusable(_) => "unusable",
+            Self::Limits(_) => "limits",
+            Self::CircuitOpen { .. } => "circuit_open",
+            Self::Refused(_) => "refused",
+            Self::AlreadySent => "already_sent",
+            Self::Upstream(_) => "upstream",
+            Self::Tls(_) => "tls",
         }
     }
 
@@ -150,5 +190,48 @@ impl EgressError {
         } else {
             Self::Interrupted("the connection failed after the request was sent")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The door's verdict on whether a byte may have left, and the reason code each failure closes
+    /// with. Every variant is listed; `may_have_sent` itself is an exhaustive match, so a new
+    /// variant is classified before this test can name it.
+    #[test]
+    fn every_failure_says_whether_it_may_have_sent() {
+        let not_sent = [
+            EgressError::Blocked(addr::Blocked::Loopback),
+            EgressError::Unreachable("x"),
+            EgressError::Timeout,
+            EgressError::Limits("x"),
+            EgressError::CircuitOpen {
+                retry_after: Duration::ZERO,
+            },
+            EgressError::Refused("x"),
+            EgressError::Upstream(UpstreamError::Port),
+            EgressError::Tls("x"),
+        ];
+        let may_have_sent = [
+            EgressError::Interrupted("x"),
+            EgressError::Unusable("x"),
+            EgressError::AlreadySent,
+        ];
+        for e in &not_sent {
+            assert!(!e.may_have_sent(), "{e:?} was read as maybe sent");
+        }
+        for e in &may_have_sent {
+            assert!(e.may_have_sent(), "{e:?} was read as never sent");
+        }
+        let kinds: std::collections::BTreeSet<_> =
+            not_sent.iter().chain(&may_have_sent).map(EgressError::kind).collect();
+        assert_eq!(kinds.len(), 11, "two failures share a reason code");
+        assert!(
+            kinds
+                .iter()
+                .all(|k| k.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        );
     }
 }

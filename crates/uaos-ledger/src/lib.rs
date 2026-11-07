@@ -18,7 +18,10 @@
 //!   entries (the journal's `budget.entry` records);
 //! * money that may already be spent is never released: in-flight reservations can only settle,
 //!   and recovery settles open reservations at full cost, marked estimated. A rebuilt ledger
-//!   refuses new work until that recovery has run.
+//!   refuses new work until that recovery has run and every item it could not close is repaired;
+//! * every write is prepared, then applied only after its record is acknowledged ([`Batch`]): the
+//!   state never runs ahead of the journal, and an error whose fate is unknown stops the ledger
+//!   until it is rebuilt.
 //!
 //! Limitations stated plainly: the idempotency index and the set of closed reservations grow
 //! with the number of entries until journal compaction introduces snapshots; the journal
@@ -27,12 +30,17 @@
 #![deny(missing_docs)]
 #![deny(clippy::float_arithmetic)]
 
+pub mod inline;
 mod journal_sink;
 mod ledger;
+mod plan;
 mod state;
 
-pub use journal_sink::{JournalSink, entries_from_journal};
+pub use inline::ReadError;
+pub use journal_sink::{JournalSink, budget_entry_draft, entries_from_journal};
 pub use ledger::{
-    CloseError, Held, InFlight, Ledger, LedgerSink, MemorySink, Recovery, Reservation, Settlement, Usage,
+    Allocate, Batch, CloseError, Closes, Held, InFlight, Ledger, LedgerSink, MemorySink, Recovery, Release, Repair,
+    RepairOutcome, Repaired, Reservation, Reserve, Settle, Settlement, Steps, StuckItem, StuckKind, Transfer, Usage,
 };
+pub use plan::{AWAITING_REPAIR, OpenOperation, PlanError, RecoveryPlan, recovery_plan, replay_with_plan, stuck_items};
 pub use state::{LedgerError, LedgerState, PoolState};

@@ -237,7 +237,7 @@ registry! {
         "Review `uaos budget explain`; report the trace if it repeats.";
     BUDGET_KEY_CONFLICT = Budget 5, User, Info, retryable: false, leak: false,
         "error-budget-key-conflict", "An idempotency key was reused for a different budget operation, or uses a reserved form.",
-        "Use a fresh idempotency key; keys starting with `rsv_` or ending in `:in`, `:reserve`, `:release`, `:settle` or `:overrun` are reserved.";
+        "Use a fresh idempotency key; keys starting with `rsv_` or ending in `:in`, `:return`, `:reserve`, `:release`, `:settle`, `:overrun` or a `:repair_` form of the last three are reserved.";
     BUDGET_LEDGER_INCONSISTENT = Budget 6, Internal, S2, retryable: false, leak: false,
         "error-budget-ledger-inconsistent", "A budget entry does not fit the ledger's state.",
         "Run `uaos journal verify` and `uaos budget explain`; report the trace.";
@@ -247,6 +247,9 @@ registry! {
     BUDGET_STREAM_OVERRUN = Budget 8, Internal, S1, retryable: false, leak: false,
         "error-budget-stream-overrun", "A response's reported usage passed its reservation mid-stream; UAOS cut the stream and stopped the kernel. The provider may have billed tokens it generated before the cut.",
         "Run `uaos budget explain` and correct the price or the clamp, then resume the kernel with `uaos resume`.";
+    BUDGET_ENTRIES_UNREADABLE = Budget 9, Internal, S2, retryable: false, leak: false,
+        "error-budget-entries-unreadable", "The journal holds budget entries in a record this version of UAOS cannot read.",
+        "Run the newest `uaos`; do not delete or edit the journal.";
     REDACT_BLOCKED = Redact 1, Security, Info, retryable: false, leak: true,
         "error-redact-blocked", "A high-risk secret was detected in outbound content and the request was blocked.",
         "Run `uaos redact test` on the content; remove the secret or start a fresh session.";

@@ -79,8 +79,8 @@ impl std::fmt::Debug for JournalSource {
 pub struct Started {
     /// The stop, as the journal left it; the actor journals its later engagements.
     pub stop: Stop,
-    /// The ledger, replayed and recovered. It writes to the journal through the actor once wires
-    /// its sink there (`StateHandle::blocking`).
+    /// The ledger, replayed and recovered. Once running, it is handed to the ledger task
+    /// (`start_ledger_task`), which writes through the actor's handle.
     pub ledger: Ledger,
     /// What the boot did.
     pub report: BootReport,

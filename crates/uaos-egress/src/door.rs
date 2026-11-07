@@ -441,6 +441,12 @@ impl Door {
         self.counters.snapshot()
     }
 
+    /// Counts a refusal before any contact, and returns it.
+    fn refused<T>(&self, error: EgressError) -> Result<T, EgressError> {
+        bump(&self.counters.refused);
+        Err(error)
+    }
+
     /// Sends one request for the Operation `binding`.
     ///
     /// Refused before any contact when the request belongs to another Operation, the upstream
@@ -526,7 +532,7 @@ impl Door {
         };
         if !self.first_send(binding) {
             admitted.settle(Outcome::NotAttempted);
-            return refuse("the Operation already sent a request");
+            return self.refused(EgressError::AlreadySent);
         }
         if let Some(c) = credential {
             outbound.headers_mut().insert(c.header, c.value);

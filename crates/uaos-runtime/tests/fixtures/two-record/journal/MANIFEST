@@ -1,0 +1,13 @@
+{
+  "schema": "uaos.journal_manifest/1",
+  "journal_id": "d681011b00dad7e8f7e5723be1103899",
+  "min_reader_version": 1,
+  "generation": 1,
+  "segments": [
+    {
+      "file": "seg-00000000000000000000-000001.jsonl",
+      "first_seq": "0",
+      "status": "active"
+    }
+  ]
+}

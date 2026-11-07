@@ -210,7 +210,7 @@ async fn a_clean_shutdown_boots_running() {
         })
         .unwrap();
     let (report, refused) = tokio::join!(
-        shut_down(&admission, &first.state, operator(), Duration::from_secs(10)),
+        shut_down(&admission, &first.state, None, operator(), Duration::from_secs(10)),
         async {
             tokio::time::sleep(Duration::from_millis(5)).await;
             admission.admit(1).err()
@@ -245,14 +245,14 @@ async fn a_clean_shutdown_boots_running() {
         Some(report.record),
         "the shutdown record was not flushed"
     );
-    assert_eq!(
-        first
-            .state
-            .append(draft(types::OP_COMMITTED, None, None))
-            .await
-            .unwrap_err(),
-        StateError::Closed,
-        "the actor kept serving after its shutdown"
+    // After its shutdown the actor serves nothing: a command is refused, before it is queued
+    // (`NotQueued`) or after, when it was queued as the actor ended (`Closed`); either way it is
+    // never written. Checked before the join, so a regression fails here instead of hanging there
+    // (of E4).
+    let refused = first.state.append(draft(types::OP_COMMITTED, None, None)).await;
+    assert!(
+        matches!(refused, Err(StateError::NotQueued | StateError::Closed)),
+        "the actor kept serving after its shutdown: {refused:?}"
     );
     let exit = first.actor.join().unwrap();
     assert_eq!(exit.flushed_through, Some(report.record));
@@ -325,7 +325,7 @@ async fn a_crash_after_a_shutdown_capable_boot_is_evidence() {
 
     // A clean shutdown, then a record after it: a later boot ended before its own record.
     let admission = Admission::new(AdmissionLimits::default(), second.stop.clone());
-    shut_down(&admission, &second.state, operator(), Duration::from_secs(10))
+    shut_down(&admission, &second.state, None, operator(), Duration::from_secs(10))
         .await
         .unwrap();
     second.actor.join().unwrap();
@@ -412,7 +412,7 @@ async fn work_left_open_at_the_deadline_is_counted() {
     let first = world.start(&supervisor);
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
     let permit = admission.admit(1).unwrap();
-    let report = shut_down(&admission, &first.state, operator(), Duration::from_millis(20))
+    let report = shut_down(&admission, &first.state, None, operator(), Duration::from_millis(20))
         .await
         .unwrap();
     let records = world.records();
@@ -449,7 +449,7 @@ async fn a_booted_stop_is_not_journaled_again() {
     let stopped = |records: &[EventEnvelope]| records.iter().filter(|r| r.event_type == types::KERNEL_STOPPED).count();
     assert_eq!(stopped(&world.records()), 1, "the engaged stop was not journaled");
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-    shut_down(&admission, &first.state, operator(), Duration::from_secs(10))
+    shut_down(&admission, &first.state, None, operator(), Duration::from_secs(10))
         .await
         .unwrap();
     first.actor.join().unwrap();
@@ -463,7 +463,7 @@ async fn a_booted_stop_is_not_journaled_again() {
         .await
         .unwrap();
     let admission = Admission::new(AdmissionLimits::default(), second.stop.clone());
-    shut_down(&admission, &second.state, operator(), Duration::from_secs(10))
+    shut_down(&admission, &second.state, None, operator(), Duration::from_secs(10))
         .await
         .unwrap();
     second.actor.join().unwrap();
@@ -702,7 +702,7 @@ async fn a_shutdown_that_failed_to_flush_is_a_crash() {
     first.state.sync().await.unwrap();
     fail.store(true, Ordering::SeqCst);
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-    let failed = shut_down(&admission, &first.state, operator(), Duration::from_secs(1)).await;
+    let failed = shut_down(&admission, &first.state, None, operator(), Duration::from_secs(1)).await;
     assert!(failed.is_err(), "the scenario's shutdown did not fail");
     assert!(first.stop.is_engaged() && first.stop.unrecorded().is_some());
     // The caller exits, as §6 step 3 allows; the process dies, and the OS keeps its bytes.
@@ -746,7 +746,7 @@ async fn a_payload_lost_behind_the_seal_leaves_the_end_clean() {
     with_payload.payload_ref = Some(chunk);
     first.state.append(with_payload).await.unwrap();
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-    shut_down(&admission, &first.state, operator(), Duration::from_secs(1))
+    shut_down(&admission, &first.state, None, operator(), Duration::from_secs(1))
         .await
         .unwrap();
     first.actor.join().unwrap();
@@ -836,7 +836,7 @@ async fn a_failed_shutdown(world: &World, supervisor: &Supervisor) {
     first.state.sync().await.unwrap();
     fail.store(true, Ordering::SeqCst);
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-    let failed = shut_down(&admission, &first.state, operator(), Duration::from_secs(1)).await;
+    let failed = shut_down(&admission, &first.state, None, operator(), Duration::from_secs(1)).await;
     assert!(failed.is_err(), "the scenario's shutdown did not fail");
     assert!(first.stop.is_engaged() && first.stop.unrecorded().is_some());
     drop(first.state);
@@ -888,7 +888,7 @@ async fn a_run_whose_records_were_lost_is_not_read_as_clean() {
     let supervisor = supervisor();
     let first = world.start(&supervisor);
     let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-    shut_down(&admission, &first.state, operator(), Duration::from_secs(1))
+    shut_down(&admission, &first.state, None, operator(), Duration::from_secs(1))
         .await
         .unwrap();
     first.actor.join().unwrap();
@@ -1032,7 +1032,7 @@ async fn a_start_cut_anywhere_never_reads_a_false_clean_end() {
             let supervisor = supervisor();
             let first = world.start(&supervisor);
             let admission = Admission::new(AdmissionLimits::default(), first.stop.clone());
-            shut_down(&admission, &first.state, operator(), Duration::from_secs(1))
+            shut_down(&admission, &first.state, None, operator(), Duration::from_secs(1))
                 .await
                 .unwrap();
             first.actor.join().unwrap();
@@ -1090,7 +1090,7 @@ async fn a_start_cut_anywhere_never_reads_a_false_clean_end() {
             );
             // And it converges: the next clean end reads clean.
             let admission = Admission::new(AdmissionLimits::default(), third.stop.clone());
-            shut_down(&admission, &third.state, operator(), Duration::from_secs(1))
+            shut_down(&admission, &third.state, None, operator(), Duration::from_secs(1))
                 .await
                 .unwrap();
             third.actor.join().unwrap();

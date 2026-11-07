@@ -25,9 +25,10 @@ use uaos_contracts::event::{Durability, EnvelopeError, InlinePayload, Metadata, 
 use uaos_contracts::operation::{RiskTier, SideEffectClass};
 use uaos_contracts::wire::Seq;
 use uaos_platform::Clock;
-use uaos_state::journal::{Appended, EventDraft, Journal, JournalError, JournalHealth};
+use uaos_state::journal::{Appended, EventDraft, FlushPolicy, Journal, JournalError, JournalHealth};
 
 use crate::admission::Admission;
+use crate::ledger_task::LedgerHandle;
 use crate::stop::{Engaged, EngagedBy, Stop, StopReason, StopWatch};
 use crate::supervisor::{SpawnError, Supervisor};
 
@@ -51,9 +52,19 @@ const THREAD_NAME: &str = "uaos-state";
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum StateError {
-    /// The actor has ended: shut down, or its thread is gone.
+    /// The actor ended after the command was queued: shut down, or its thread is gone. What it
+    /// did with the command is unknown.
     #[error("the state actor has ended")]
     Closed,
+    /// The command was refused before it was queued: the actor has ended. Nothing was written.
+    #[error("the state actor has ended; the command was not queued")]
+    NotQueued,
+    /// An engaged stop's record could not land, so the command was refused before its own line was
+    /// written: inside the stop record's pause, without touching the journal; or on an append that
+    /// tried the stop record first and failed, after which the stop's line may be in the journal
+    /// but the command's is not. The journal's own error says why the stop record failed.
+    #[error("a stop record is pending: {0}")]
+    StopPending(JournalError),
     /// The journal refused, with its own error and code.
     #[error(transparent)]
     Journal(#[from] JournalError),
@@ -145,6 +156,7 @@ enum Command {
     Append(Box<EventDraft>, oneshot::Sender<Result<Appended, StateError>>),
     Sync(oneshot::Sender<Result<(), StateError>>),
     Health(oneshot::Sender<JournalHealth>),
+    FlushPolicy(oneshot::Sender<FlushPolicy>),
     Stats(oneshot::Sender<StateStats>),
     Shutdown(ShutdownReason, oneshot::Sender<Result<ShutdownReport, StateError>>),
 }
@@ -156,6 +168,7 @@ impl fmt::Debug for Command {
             Self::Append(..) => "Append",
             Self::Sync(_) => "Sync",
             Self::Health(_) => "Health",
+            Self::FlushPolicy(_) => "FlushPolicy",
             Self::Stats(_) => "Stats",
             Self::Shutdown(..) => "Shutdown",
         })
@@ -219,9 +232,14 @@ impl StateCore {
     /// # Errors
     /// The journal's refusal.
     pub fn append(&mut self, draft: EventDraft) -> Result<Appended, StateError> {
-        // An engaged stop's record goes ahead of every later record; while it cannot land, nothing
-        // else does.
-        self.record_stop(true)?;
+        // An engaged stop's record goes ahead of every later record. When it cannot land, this
+        // command's line is not written either, whatever the stop record's try did. The refusal
+        // says so, and the ledger task reads it as a write that wrote nothing: it tries the close
+        // again instead of poisoning the ledger (of E4).
+        self.record_stop(true).map_err(|error| match error {
+            StateError::Journal(error) => StateError::StopPending(error),
+            other => other,
+        })?;
         // The journal flushes inside an append once W has passed since its last flush; that
         // flush covers the records already waiting, so their age counts toward P1.
         let waiting = self.journal.unflushed_since().map(|since| (since, self.clock.mono().0));
@@ -274,7 +292,9 @@ impl StateCore {
             return Ok(());
         };
         if self.clock.mono().0 < self.stop_retry_at {
+            // Inside the pause nothing touches the journal: the refusal wrote nothing.
             return match (now, &self.stop_error) {
+                (true, Some(StateError::Journal(error))) => Err(StateError::StopPending(error.clone())),
                 (true, Some(error)) => Err(error.clone()),
                 _ => Ok(()),
             };
@@ -487,6 +507,9 @@ impl StateCore {
             Command::Health(reply) => {
                 let _unanswered = reply.send(self.health());
             }
+            Command::FlushPolicy(reply) => {
+                let _unanswered = reply.send(self.journal.flush_policy());
+            }
             Command::Stats(reply) => {
                 let mut stats = self.stats();
                 stats.queued = queued;
@@ -514,7 +537,8 @@ impl StateHandle {
     /// Appends a record. A full queue makes the caller wait; it never drops the record.
     ///
     /// # Errors
-    /// [`StateError::Closed`] after the actor ended; the journal's own refusal otherwise.
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended; the journal's
+    /// own refusal otherwise, or [`StateError::StopPending`] while a stop record waits.
     pub async fn append(&self, draft: EventDraft) -> Result<Appended, StateError> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Append(Box::new(draft), reply)).await?;
@@ -524,7 +548,8 @@ impl StateHandle {
     /// Flushes every acknowledged record now.
     ///
     /// # Errors
-    /// [`StateError::Closed`] after the actor ended; the journal's own refusal otherwise.
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended; the journal's
+    /// own refusal otherwise, or [`StateError::StopPending`] while a stop record waits.
     pub async fn sync(&self) -> Result<(), StateError> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Sync(reply)).await?;
@@ -534,19 +559,30 @@ impl StateHandle {
     /// The journal's health.
     ///
     /// # Errors
-    /// [`StateError::Closed`] after the actor ended.
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended.
     pub async fn health(&self) -> Result<JournalHealth, StateError> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Health(reply)).await?;
         answer.await.map_err(|_| StateError::Closed)
     }
 
-    /// Shuts the actor down cleanly: flushes, writes `kernel.shutdown`, flushes it, and ends; later
-    /// commands get [`StateError::Closed`]. [`shut_down`] closes admission and waits for open work
-    /// first.
+    /// The policy the journal flushes under: what an intent records as its `durability`.
     ///
     /// # Errors
-    /// [`StateError::Closed`] after the actor ended; the journal's own refusal otherwise.
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended.
+    pub async fn flush_policy(&self) -> Result<FlushPolicy, StateError> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::FlushPolicy(reply)).await?;
+        answer.await.map_err(|_| StateError::Closed)
+    }
+
+    /// Shuts the actor down cleanly: flushes, writes `kernel.shutdown`, flushes it, and ends; later
+    /// commands get [`StateError::NotQueued`]. [`shut_down`] closes admission and waits for open
+    /// work first.
+    ///
+    /// # Errors
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended; the journal's
+    /// own refusal otherwise, or [`StateError::StopPending`] while a stop record waits.
     pub async fn shutdown(&self, reason: ShutdownReason) -> Result<ShutdownReport, StateError> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Shutdown(reason, reply)).await?;
@@ -556,7 +592,7 @@ impl StateHandle {
     /// What the actor has done so far.
     ///
     /// # Errors
-    /// [`StateError::Closed`] after the actor ended.
+    /// [`StateError::NotQueued`] or [`StateError::Closed`] after the actor ended.
     pub async fn stats(&self) -> Result<StateStats, StateError> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Stats(reply)).await?;
@@ -569,8 +605,10 @@ impl StateHandle {
         self.commands.max_capacity() - self.commands.capacity()
     }
 
+    /// Queues a command. Refused before it is queued once the actor has ended: nothing was
+    /// written.
     async fn send(&self, command: Command) -> Result<(), StateError> {
-        self.commands.send(command).await.map_err(|_| StateError::Closed)
+        self.commands.send(command).await.map_err(|_| StateError::NotQueued)
     }
 }
 
@@ -580,10 +618,12 @@ pub struct StateQueue {
     commands: mpsc::Receiver<Command>,
 }
 
-/// A bounded queue of `capacity` commands (at least one) and the handle that writes to it.
+/// A bounded queue of `capacity` commands (at least one, at most what a bounded channel holds)
+/// and the handle that writes to it.
 #[must_use]
 pub fn state_queue(capacity: usize) -> (StateHandle, StateQueue) {
-    let (commands, receiver) = mpsc::channel(capacity.max(1));
+    // No more than a bounded channel holds: a larger capacity is clamped, never a panic.
+    let (commands, receiver) = mpsc::channel(capacity.clamp(1, tokio::sync::Semaphore::MAX_PERMITS));
     (StateHandle { commands }, StateQueue { commands: receiver })
 }
 
@@ -831,28 +871,75 @@ fn shutdown_draft(reason: &ShutdownReason) -> Result<EventDraft, EnvelopeError> 
     })
 }
 
-/// Shuts the kernel down cleanly: closes admission with `RUNTIME_DRAINING`, waits up to `deadline`
-/// for the Operations in flight to end, then has the state actor write and flush `kernel.shutdown`
-/// and end. Cutting the Operations still open at the deadline, as a stop cuts them, lands with the
-/// pipeline that drives them; until then they are counted in the record, and the next boot's
-/// recovery closes them.
+/// How long past its deadline a shutdown waits for the ledger task's answer before it counts the
+/// task as one open Operation and goes on. The task starts no close after the deadline; the grace
+/// covers the command it is in: a write already handed to the actor, and the one or two that
+/// command may still make (a transfer's second record, or the release after a refused
+/// `op.executing`).
+pub const LEDGER_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Shuts the kernel down cleanly: closes admission with `RUNTIME_DRAINING`, and the ledger task's
+/// `reserve` and `execute` with it; waits up to `deadline` for the Operations in flight to end
+/// while the task keeps performing closes; then ends the task, which drains until every token is
+/// closed or the deadline passes; and only then has the state actor write and flush
+/// `kernel.shutdown` and end. Cutting the Operations still open at the deadline, as a stop cuts
+/// them, lands with the pipeline that drives them; until then they are counted in the record, and
+/// the next boot's recovery closes them.
+///
+/// `open_operations` is at least the number of Operations left open, from two reads in this
+/// order: admission's in-flight count, read before the task is told to end (a caller still
+/// waiting on a close's reply holds its permit until then), plus the reservations still open in
+/// the task's ledger when it ends, stuck items excepted. An Operation can be counted twice, never
+/// zero times. A task that does not answer within [`LEDGER_DRAIN_GRACE`] past the deadline, or
+/// that had already ended, is counted as one: what it left open is unknown, so the next boot
+/// says work was left open (a stop may have been lost) rather than nothing.
+///
+/// `ledger` is `None` only where no ledger task runs: with a task running, `None` would leave
+/// its open reservations uncounted.
 ///
 /// # Errors
 /// As [`StateHandle::shutdown`].
 pub async fn shut_down(
     admission: &Admission,
     state: &StateHandle,
+    ledger: Option<&LedgerHandle>,
     by: EngagedBy,
     deadline: Duration,
 ) -> Result<ShutdownReport, StateError> {
+    let now = tokio::time::Instant::now();
+    // A deadline too far to represent (`Duration::MAX`) waits a year instead of panicking.
+    let until = now
+        .checked_add(deadline)
+        .or_else(|| now.checked_add(Duration::from_hours(24 * 365)))
+        .unwrap_or(now);
     admission.drain();
-    let _waited = tokio::time::timeout(deadline, async {
+    if let Some(ledger) = ledger {
+        ledger.drain();
+    }
+    let _waited = tokio::time::timeout_at(until, async {
         while admission.in_flight().0 > 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await;
-    let open = admission.in_flight().0;
+    let admitted = admission.in_flight().0;
+    let left = match ledger {
+        // The drain ends at `until`; a task that has not answered a grace later (one stuck in a
+        // write the state actor has not answered) is counted as one, and the shutdown goes on.
+        Some(ledger) => {
+            let answered = tokio::time::timeout_at(
+                until.checked_add(LEDGER_DRAIN_GRACE).unwrap_or(until),
+                ledger.shutdown(until),
+            )
+            .await;
+            match answered {
+                Ok(Ok(open)) => open.0,
+                Ok(Err(_)) | Err(_) => 1,
+            }
+        }
+        None => 0,
+    };
+    let open = admitted.saturating_add(left);
     state.shutdown(ShutdownReason::new(by, open)).await
 }
 

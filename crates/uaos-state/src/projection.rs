@@ -26,8 +26,9 @@ use uaos_platform::fs::Fs;
 
 use crate::journal::{JournalError, VerifiedRecord, read_verified};
 
-/// Projection schema version; a mismatch triggers a rebuild.
-const SCHEMA_VERSION: &str = "1";
+/// Projection schema version; a mismatch triggers a rebuild. Version 2: an Operation's class comes
+/// from its intent (intent contract).
+const SCHEMA_VERSION: &str = "2";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -117,6 +118,12 @@ pub struct EventRow {
 pub struct OperationRow {
     /// Latest lifecycle state recorded in the journal.
     pub state: String,
+    /// The side-effect class its intent declared; before an intent, its first record's.
+    pub side_effect_class: String,
+    /// Whether its intent declared it compensable.
+    pub compensable: bool,
+    /// The risk tier its intent declared.
+    pub risk_tier: u8,
     /// First and last journal records concerning it.
     pub first_seq: u64,
     /// Last journal record concerning it.
@@ -270,11 +277,21 @@ impl Projections {
             )?;
             if let Some(op) = e.operation_id {
                 let state = state_for(e.event_type.as_str());
+                // The class, compensability and tier are the intent's, whatever record came first
+                // (a two-record `budget.entry` carries `none`). The first intent speaks: a second
+                // one finds the Operation past `proposed`.
+                let intent = e.event_type == types::OP_RESERVED_INTENT;
                 tx.execute(
                     "INSERT INTO operations(id, state, side_effect_class, compensable, risk_tier, first_seq, last_seq)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
                      ON CONFLICT(id) DO UPDATE SET
                         state = COALESCE(?7, operations.state),
+                        side_effect_class = CASE WHEN ?8 AND operations.state = ?9
+                            THEN excluded.side_effect_class ELSE operations.side_effect_class END,
+                        compensable = CASE WHEN ?8 AND operations.state = ?9
+                            THEN excluded.compensable ELSE operations.compensable END,
+                        risk_tier = CASE WHEN ?8 AND operations.state = ?9
+                            THEN excluded.risk_tier ELSE operations.risk_tier END,
                         last_seq = excluded.last_seq",
                     params![
                         op.to_string(),
@@ -284,6 +301,8 @@ impl Projections {
                         i64::from(e.risk_tier.get()),
                         seq,
                         state.map(|s| snake(&s)),
+                        intent,
+                        snake(&OperationState::Proposed),
                     ],
                 )?;
             }
@@ -355,14 +374,27 @@ impl Projections {
     pub fn operation(&self, id: OperationId) -> Result<Option<OperationRow>, ProjectionError> {
         self.conn
             .query_row(
-                "SELECT state, first_seq, last_seq FROM operations WHERE id = ?1",
+                "SELECT state, side_effect_class, compensable, risk_tier, first_seq, last_seq
+                 FROM operations WHERE id = ?1",
                 [id.to_string()],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, i64>(5)?,
+                    ))
+                },
             )
             .optional()?
-            .map(|(state, first, last)| {
+            .map(|(state, side_effect_class, compensable, risk_tier, first, last)| {
                 Ok(OperationRow {
                     state,
+                    side_effect_class,
+                    compensable: compensable != 0,
+                    risk_tier: u8::try_from(risk_tier).map_err(|_| ProjectionError::OutOfRange)?,
                     first_seq: to_u64(first)?,
                     last_seq: to_u64(last)?,
                 })

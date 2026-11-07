@@ -8,15 +8,19 @@
 //! 1. records that are not the journal's, or a configuration older than the journal's last, are
 //!    refused, before anything is written;
 //! 2. the stop is restored;
-//! 3. the ledger is replayed and recovered: money that may be spent is settled, never released;
-//! 4. every open intent becomes `Indeterminate`, once: neither success nor failure is assumed;
+//! 3. The ledger is replayed; each open one-record Operation closes in its own `op.indeterminate`,
+//!    with its reservation settled at the full amount (intent contract); then recovery closes what
+//!    is left. Money that may be spent is settled, never released.
+//! 4. every other open intent becomes `Indeterminate`, once: neither success nor failure is
+//!    assumed;
 //! 5. the boot is journaled with its counts, and with how the run before it ended: a clean
 //!    shutdown, a crash, or unknown.
 //!
 //! A crash between any two appends converges on the next boot without duplicates.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use uaos_contracts::budget::LedgerDelta;
 use uaos_contracts::error::{ErrorCode, codes};
 use uaos_contracts::event::{
     Actor, Durability, EnvelopeError, EventEnvelope, EventType, InlinePayload, Metadata, types,
@@ -24,7 +28,10 @@ use uaos_contracts::event::{
 use uaos_contracts::id::{CorrelationId, OperationId};
 use uaos_contracts::operation::{RiskTier, SideEffectClass};
 use uaos_contracts::wire::{ConfigVersion, Seq};
-use uaos_ledger::{JournalSink, Ledger, LedgerError, entries_from_journal};
+use uaos_ledger::inline::LEDGER_FIELD;
+use uaos_ledger::{
+    JournalSink, Ledger, LedgerError, OpenOperation, PlanError, ReadError, StuckItem, StuckKind, replay_with_plan,
+};
 use uaos_state::journal::{EventDraft, Journal, JournalError, OpenEvidence, VerifiedRecord};
 
 use crate::config::ConfigSnapshot;
@@ -71,15 +78,21 @@ pub struct BootReport {
     pub stop: BootState,
     /// Operations whose intent had no outcome, now `Indeterminate`, in journal order.
     pub indeterminate: Vec<OperationId>,
-    /// Open reservations settled at their full amount, estimated.
+    /// Of those, the one-record Operations whose own `op.indeterminate` settled their reservation
+    /// at its full amount, estimated.
+    pub indeterminate_settled: usize,
+    /// Open reservations of the two-record form settled at their full amount, estimated, by
+    /// `budget.entry` records under boot's correlation.
     pub settled_estimated: usize,
     /// Partly settled reservations completed.
     pub completed: usize,
     /// Transfers whose second half was recorded.
     pub transfers_completed: usize,
-    /// Why each ledger item recovery could not close stayed open. While any remain, the ledger
-    /// refuses new work (`BUDGET_RECOVERY_REQUIRED`). Not journaled: the record counts them.
-    pub stuck: Vec<String>,
+    /// The items recovery could not close, each with the reason code saying why: one-record
+    /// reservations, then what the ledger's recovery could not close. While any remain, the ledger
+    /// refuses new work (`BUDGET_RECOVERY_REQUIRED`). Not journaled: the record counts them, by
+    /// kind.
+    pub stuck: Vec<StuckItem>,
     /// How the run before this boot ended.
     pub last_end: LastEnd,
     /// The kernel boots running after a crash: a stop engaged just before it may not have been
@@ -129,9 +142,10 @@ pub enum BootError {
         /// The version the process starts with.
         configured: ConfigVersion,
     },
-    /// A ledger entry in the journal does not decode. Nothing was written.
-    #[error("a budget entry in the journal does not decode: {0}")]
-    LedgerEntries(String),
+    /// The journal's ledger entries cannot be read: a record breaks the runtime intent contract's
+    /// rules, or this kernel cannot read it. Nothing was written.
+    #[error("the journal's budget entries cannot be read: {0}")]
+    LedgerEntries(#[source] ReadError),
     /// The ledger's entries do not replay, or its recovery failed other than at the journal.
     #[error("the budget ledger could not be rebuilt: {0}")]
     Ledger(#[source] LedgerError),
@@ -152,7 +166,8 @@ impl BootError {
         match self {
             Self::StaleRecords { .. } => codes::RUNTIME_BOOT_RECORDS_STALE,
             Self::ConfigDrift { .. } => codes::CONFIG_DRIFT,
-            Self::LedgerEntries(_) | Self::Ledger(_) => codes::BUDGET_LEDGER_INCONSISTENT,
+            Self::LedgerEntries(error) => error.code(),
+            Self::Ledger(_) => codes::BUDGET_LEDGER_INCONSISTENT,
             Self::Journal(error) => error.code(),
             Self::Envelope(_) => codes::JOURNAL_WRITE_FAILED,
         }
@@ -210,23 +225,40 @@ pub fn boot(
     let stop_state = boot_state(records.iter().map(|r| &r.envelope));
     let stop = Stop::booted(stop_state);
 
-    // 3. The ledger: replayed, then recovered (a replayed ledger always runs its recovery). Open
-    // reservations settle at their full amount, estimated, and are never released: their
-    // Operations may have spent them.
-    let entries = entries_from_journal(records).map_err(BootError::LedgerEntries)?;
-    let mut ledger = Ledger::replay(&entries).map_err(BootError::Ledger)?;
+    // 3. The ledger: replayed; open one-record Operations closed in their own records; then
+    // Recovered (a replayed ledger always runs its recovery). Open reservations settle at their
+    // full amount, estimated, and are never released: their Operations may have spent them. The
+    // plan says what boot closes and what stays stuck.
+    let (mut ledger, plan) = replay_with_plan(records).map_err(|error| match error {
+        PlanError::Read(error) => BootError::LedgerEntries(error),
+        PlanError::Ledger(error) => BootError::Ledger(error),
+    })?;
+    let intents = open_intents(records);
+    let one_record: BTreeSet<OperationId> = plan.open().iter().map(|open| open.operation).collect();
+    let indeterminate_settled =
+        close_one_record_operations(journal, &mut ledger, records, &intents, plan.open(), config.version())?;
     let recovery = {
         let mut sink = JournalSink::new(journal, correlation, None, config.version());
-        match ledger.recover(&mut sink, &Actor::System) {
+        match ledger.recover(&mut sink, &Actor::System, &plan) {
             Ok(recovery) => recovery,
             // A journal failure keeps the journal's own code, as it does at boot's own records.
             Err(error) => return Err(sink.take_refusal().map_or(BootError::Ledger(error), BootError::Journal)),
         }
     };
 
-    // 4. Every intent with no outcome becomes indeterminate, once, with the effect it declared.
-    let intents = open_intents(records);
-    for intent in &intents {
+    // 4. Every other intent with no outcome, the two-record form's, becomes indeterminate, once,
+    // with the effect it declared.
+    for intent in intents.iter().filter(|intent| {
+        intent
+            .operation_id
+            .is_none_or(|operation| !one_record.contains(&operation))
+    }) {
+        if carries_ledger(intent) {
+            // A one-record intent the plan does not list as open: the reader and boot disagree.
+            return Err(BootError::Ledger(LedgerError::Inconsistent(
+                "a one-record intent is open and the recovery plan does not list it",
+            )));
+        }
         journal.append(indeterminate_draft(intent, config.version())?)?;
     }
 
@@ -243,6 +275,7 @@ pub fn boot(
     let crashed = interrupted
         || !intents.is_empty()
         || recovery.settled_estimated + recovery.completed + recovery.transfers_completed > 0;
+    let stuck = ledger.stuck().to_vec();
     let (last_end, open_at_shutdown) = last_end(records, last_boot, evidence);
     let stop_may_be_lost = stop_state == BootState::Running
         && match last_end {
@@ -254,15 +287,16 @@ pub fn boot(
         records: u64::try_from(records.len()).unwrap_or(u64::MAX),
         stop: stop_state,
         indeterminate: intents.iter().filter_map(|intent| intent.operation_id).collect(),
+        indeterminate_settled,
         settled_estimated: recovery.settled_estimated,
         completed: recovery.completed,
         transfers_completed: recovery.transfers_completed,
-        stuck: recovery.stuck,
+        stuck,
         last_end,
         stop_may_be_lost,
         config_version: config.version(),
     };
-    journal.append(booted_draft(&report, correlation)?)?;
+    journal.append(booted_draft(&report, BootCounts::of(&report), correlation)?)?;
     Ok(Booted { stop, ledger, report })
 }
 
@@ -357,6 +391,110 @@ fn open_intents(records: &[VerifiedRecord]) -> Vec<&EventEnvelope> {
     open.into_iter().map(|(_, intent)| intent).collect()
 }
 
+/// Whether an intent is the one-record form's: its reserve travels inside it.
+fn carries_ledger(intent: &EventEnvelope) -> bool {
+    intent
+        .payload_inline
+        .as_ref()
+        .is_some_and(|payload| payload.as_value().get(LEDGER_FIELD).is_some())
+}
+
+/// Closes each open one-record Operation the plan lists, in intent order, in its own record.
+/// Returns how many records settled their reservation.
+fn close_one_record_operations(
+    journal: &mut Journal,
+    ledger: &mut Ledger,
+    records: &[VerifiedRecord],
+    intents: &[&EventEnvelope],
+    open_operations: &[OpenOperation],
+    config_version: ConfigVersion,
+) -> Result<usize, BootError> {
+    let mut indeterminate_settled = 0;
+    for open in open_operations {
+        // The plan and the intents agree on what is open: an Operation with an outcome is never
+        // recovered again (idempotence).
+        if !intents.iter().any(|intent| intent.operation_id == Some(open.operation)) {
+            return Err(BootError::Ledger(LedgerError::Inconsistent(
+                "the recovery plan lists an Operation open that has an outcome",
+            )));
+        }
+        let intent = usize::try_from(open.intent_seq)
+            .ok()
+            .and_then(|at| records.get(at))
+            .map(|record| &record.envelope)
+            .filter(|intent| intent.operation_id == Some(open.operation))
+            .ok_or(BootError::Ledger(LedgerError::Inconsistent(
+                "an open one-record Operation's intent is not where the plan says",
+            )))?;
+        if close_one_record(journal, ledger, intent, open, config_version)? {
+            indeterminate_settled += 1;
+        }
+    }
+    Ok(indeterminate_settled)
+}
+
+/// Closes an open one-record Operation in its own `op.indeterminate`. Its reservation's settlement
+/// at the full amount, estimated, is prepared before the record and applied only after the journal
+/// acknowledges it. When the ledger refuses that settlement, the record carries no entries and the
+/// reservation is a stuck item. Returns whether the record settled the reservation.
+fn close_one_record(
+    journal: &mut Journal,
+    ledger: &mut Ledger,
+    intent: &EventEnvelope,
+    open: &OpenOperation,
+    config_version: ConfigVersion,
+) -> Result<bool, BootError> {
+    if !open.settles {
+        journal.append(one_record_draft(intent, open, None, config_version)?)?;
+        return Ok(false);
+    }
+    let batch = ledger
+        .prepare_recovery_settle(open.reservation)
+        .map_err(BootError::Ledger)?;
+    let appended = batch
+        .delta()
+        .map_err(|_| BootError::Ledger(LedgerError::Inconsistent("a recovery settlement does not fit a delta")))
+        .and_then(|delta| one_record_draft(intent, open, Some(&delta), config_version))
+        .and_then(|draft| journal.append(draft).map_err(BootError::from));
+    match appended {
+        Ok(_) => {
+            let _settled = ledger.apply(batch);
+            Ok(true)
+        }
+        Err(error) => {
+            // The record was refused, or its fate is unknown: the ledger stops, and the next boot
+            // reads the journal again and closes the Operation once (idempotence).
+            ledger.abandon(batch);
+            Err(error)
+        }
+    }
+}
+
+/// A one-record Operation's `op.indeterminate`: the two-record form's record, which says whether
+/// the journal holds the Operation's `op.executing` (`executing_recorded`) and carries the
+/// settlement, when there is one.
+fn one_record_draft(
+    intent: &EventEnvelope,
+    open: &OpenOperation,
+    delta: Option<&LedgerDelta>,
+    config_version: ConfigVersion,
+) -> Result<EventDraft, BootError> {
+    let mut payload = serde_json::json!({
+        "reason": CRASH_RECOVERY,
+        "may_have_taken_effect": true,
+        "executing_recorded": open.executing_recorded,
+    });
+    if let (Some(delta), Some(fields)) = (delta, payload.as_object_mut()) {
+        let delta = serde_json::to_value(delta)
+            .map_err(|_| BootError::Ledger(LedgerError::Inconsistent("a recovery settlement does not serialize")))?;
+        fields.insert(LEDGER_FIELD.to_owned(), delta);
+    }
+    Ok(EventDraft {
+        payload_inline: Some(InlinePayload::new(payload)?),
+        ..indeterminate_draft(intent, config_version)?
+    })
+}
+
 /// `op.indeterminate` for an intent with no outcome (`Transition::CrashRecovered`). It is the
 /// Operation's record: it carries the intent's ids and correlation, links to the intent, keeps the
 /// effect the intent declared, and says the effect may have happened. The request may have reached
@@ -389,22 +527,78 @@ fn indeterminate_draft(intent: &EventEnvelope, config_version: ConfigVersion) ->
     })
 }
 
+/// The counts `kernel.booted` carries: what recovery closed in the Operations' own records
+/// (`indeterminate_settled`) and in boot's (`settled_estimated`, `completed`,
+/// `transfers_completed`), and what it could not (`stuck`, by kind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BootCounts {
+    records: u64,
+    indeterminate: u64,
+    indeterminate_settled: u64,
+    settled_estimated: u64,
+    completed: u64,
+    transfers_completed: u64,
+    stuck: u64,
+    stuck_reservations: u64,
+    stuck_transfers: u64,
+}
+
+impl BootCounts {
+    fn of(report: &BootReport) -> Self {
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        let kind = |reservation: bool| {
+            count(
+                report
+                    .stuck
+                    .iter()
+                    .filter(|item| matches!(item.kind, StuckKind::Reservation(_)) == reservation)
+                    .count(),
+            )
+        };
+        Self {
+            records: report.records,
+            indeterminate: count(report.indeterminate.len()),
+            indeterminate_settled: count(report.indeterminate_settled),
+            settled_estimated: count(report.settled_estimated),
+            completed: count(report.completed),
+            transfers_completed: count(report.transfers_completed),
+            stuck: count(report.stuck.len()),
+            stuck_reservations: kind(true),
+            stuck_transfers: kind(false),
+        }
+    }
+
+    /// Whether recovery closed or left anything.
+    const fn any_recovered(&self) -> bool {
+        self.indeterminate != 0
+            || self.indeterminate_settled != 0
+            || self.settled_estimated != 0
+            || self.completed != 0
+            || self.transfers_completed != 0
+            || self.stuck != 0
+    }
+}
+
 /// `kernel.booted`, with the boot's counts as canonical decimal strings (`wire`'s rule). A boot
 /// that closed anything, follows a crash, or says a stop may have been lost, surfaces at the
 /// highest risk tier; a clean boot is routine. `shutdown_record: true` says this run journals a
 /// clean shutdown, so the next boot can tell one from a crash.
-fn booted_draft(report: &BootReport, correlation: CorrelationId) -> Result<EventDraft, EnvelopeError> {
-    let recovered = !report.indeterminate.is_empty()
-        || report.settled_estimated + report.completed + report.transfers_completed + report.stuck.len() > 0
-        || report.last_end == LastEnd::Crashed
-        || report.stop_may_be_lost;
+fn booted_draft(
+    report: &BootReport,
+    counts: BootCounts,
+    correlation: CorrelationId,
+) -> Result<EventDraft, EnvelopeError> {
+    let recovered = counts.any_recovered() || report.last_end == LastEnd::Crashed || report.stop_may_be_lost;
     let payload = serde_json::json!({
-            "records": report.records.to_string(),
-            "indeterminate": report.indeterminate.len().to_string(),
-            "settled_estimated": report.settled_estimated.to_string(),
-            "completed": report.completed.to_string(),
-            "transfers_completed": report.transfers_completed.to_string(),
-            "stuck": report.stuck.len().to_string(),
+            "records": counts.records.to_string(),
+            "indeterminate": counts.indeterminate.to_string(),
+            "indeterminate_settled": counts.indeterminate_settled.to_string(),
+            "settled_estimated": counts.settled_estimated.to_string(),
+            "completed": counts.completed.to_string(),
+            "transfers_completed": counts.transfers_completed.to_string(),
+            "stuck": counts.stuck.to_string(),
+            "stuck_reservations": counts.stuck_reservations.to_string(),
+            "stuck_transfers": counts.stuck_transfers.to_string(),
             "stopped": report.stop != BootState::Running,
             "stop_may_be_lost": report.stop_may_be_lost,
             "config_version": report.config_version.0.to_string(),
@@ -436,30 +630,57 @@ fn booted_draft(report: &BootReport, correlation: CorrelationId) -> Result<Event
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test: a failed fixture fails the test")]
 mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use uaos_contracts::budget::{IdempotencyKey, ReasonCode};
     use uaos_contracts::id::TypedId;
+    use uaos_contracts::limits::MAX_INLINE_PAYLOAD;
+    use uaos_contracts::time::WallTime;
+    use uaos_platform::fs::Fs as _;
+    use uaos_platform::sim::fs::SimFs;
+    use uaos_platform::sim::{SimClock, SimRng};
+    use uaos_state::journal::FlushPolicy;
 
     use super::*;
+
+    fn report(stuck: Vec<StuckItem>) -> BootReport {
+        BootReport {
+            records: 1,
+            stop: BootState::Running,
+            indeterminate: Vec::new(),
+            indeterminate_settled: 0,
+            settled_estimated: 0,
+            completed: 0,
+            transfers_completed: 0,
+            stuck,
+            last_end: LastEnd::Unknown,
+            stop_may_be_lost: false,
+            config_version: ConfigVersion(1),
+        }
+    }
 
     #[test]
     fn a_boot_that_leaves_an_item_stuck_counts_it_and_surfaces() {
         // A stuck item is counted in the boot record and makes it surface, though it is no evidence
-        // of a crash by itself.
-        let report = BootReport {
-            records: 1,
-            stop: BootState::Running,
-            indeterminate: Vec::new(),
-            settled_estimated: 0,
-            completed: 0,
-            transfers_completed: 0,
-            stuck: vec!["transfer t: a key conflict".to_owned()],
-            last_end: LastEnd::Unknown,
-            stop_may_be_lost: false,
-            config_version: ConfigVersion(1),
-        };
-        let draft = booted_draft(&report, CorrelationId::from_parts(1, [1; 10])).unwrap();
+        // of a crash by itself. Counted by kind.
+        let report = report(vec![StuckItem {
+            kind: StuckKind::Transfer(IdempotencyKey::new("t").unwrap()),
+            reason: ReasonCode::new("key_conflict").unwrap(),
+        }]);
+        let draft = booted_draft(&report, BootCounts::of(&report), CorrelationId::from_parts(1, [1; 10])).unwrap();
+        let payload = draft.payload_inline.as_ref().unwrap().as_value();
         assert_eq!(
-            draft.payload_inline.as_ref().unwrap().as_value()["stuck"],
-            serde_json::json!("1"),
+            (
+                &payload["stuck"],
+                &payload["stuck_transfers"],
+                &payload["stuck_reservations"]
+            ),
+            (
+                &serde_json::json!("1"),
+                &serde_json::json!("1"),
+                &serde_json::json!("0")
+            ),
             "the boot record hid a stuck item"
         );
         assert_eq!(
@@ -467,5 +688,50 @@ mod tests {
             RiskTier::MAX,
             "a boot that left an item stuck was journaled as routine"
         );
+    }
+
+    #[test]
+    fn the_boot_record_fits_with_every_count_at_its_extreme() {
+        // The boot record is built and journaled with every count at its 64-bit extreme, so its
+        // size is checked, not estimated. The longest flags: `false` for both booleans and
+        // `unknown` for the end.
+        let report = BootReport {
+            config_version: ConfigVersion(u64::MAX),
+            ..report(Vec::new())
+        };
+        let counts = BootCounts {
+            records: u64::MAX,
+            indeterminate: u64::MAX,
+            indeterminate_settled: u64::MAX,
+            settled_estimated: u64::MAX,
+            completed: u64::MAX,
+            transfers_completed: u64::MAX,
+            stuck: u64::MAX,
+            stuck_reservations: u64::MAX,
+            stuck_transfers: u64::MAX,
+        };
+        let draft = booted_draft(&report, counts, CorrelationId::from_parts(1, [1; 10])).unwrap();
+        let payload = serde_json::to_vec(draft.payload_inline.as_ref().unwrap().as_value()).unwrap();
+        assert!(
+            u64::try_from(payload.len()).unwrap() <= MAX_INLINE_PAYLOAD.0,
+            "the boot record at its extremes is {} bytes",
+            payload.len()
+        );
+        // Journaled as boot journals it.
+        let fs = SimFs::new();
+        fs.create_dir_all(Path::new("/data")).unwrap();
+        let mut journal = Journal::open(
+            Arc::new(fs),
+            Arc::new(SimClock::new(
+                WallTime::from_unix_nanos(1_760_000_000_000_000_000).unwrap(),
+            )),
+            Arc::new(SimRng::new(1)),
+            Path::new("/data"),
+            FlushPolicy::Strict,
+        )
+        .unwrap();
+        journal
+            .append(draft)
+            .expect("the boot record at its extremes was not journaled");
     }
 }

@@ -11,24 +11,33 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use proptest::prelude::*;
-use uaos_contracts::budget::{BudgetTxKind, IdempotencyKey};
+use proptest::test_runner::TestCaseError;
+use uaos_contracts::budget::LedgerDelta;
+use uaos_contracts::budget::{BudgetTx, BudgetTxKind, BudgetTxSchema, IdempotencyKey, ReasonCode};
 use uaos_contracts::event::{Actor, Durability, EventEnvelope, EventType, InlinePayload, Metadata, types};
 use uaos_contracts::id::{
-    AgentId, CorrelationId, OperationId, PocketId, PoolId, RequestId, ReservationId, SessionId, TypedId,
+    AgentId, CorrelationId, EventId, OperationId, PocketId, PoolId, RequestId, ReservationId, SessionId, TypedId,
 };
 use uaos_contracts::money::NanoUsd;
-use uaos_contracts::operation::{RiskTier, SideEffectClass};
+use uaos_contracts::operation::{OperationKind, RiskTier, SideEffectClass};
 use uaos_contracts::time::WallTime;
 use uaos_contracts::wire::{ConfigVersion, Seq};
-use uaos_ledger::{JournalSink, Ledger, Usage, entries_from_journal};
+use uaos_ledger::inline::LEDGER_FIELD;
+use uaos_ledger::{
+    JournalSink, Ledger, LedgerSink, Repair, RepairOutcome, StuckItem, StuckKind, Usage, entries_from_journal,
+};
 use uaos_platform::fs::Fs;
 use uaos_platform::sim::fs::SimFs;
 use uaos_platform::sim::{SimClock, SimRng};
 use uaos_platform::{Clock, Rng};
 use uaos_runtime::{
-    BootError, BootState, Booted, CRASH_RECOVERY, ConfigSnapshot, EngagedBy, LastEnd, LocaleTag, Stop, StopReason, boot,
+    Admission, AdmissionLimits, BootError, BootState, Booted, CRASH_RECOVERY, ConfigSnapshot, DEFAULT_LEDGER_QUEUE,
+    DEFAULT_QUEUE_CAPACITY, EngagedBy, LastEnd, LedgerCallError, LedgerHandle, LocaleTag, OperationRecord, RepairBy,
+    StateActor, StateCore, StateHandle, Stop, StopReason, Supervisor, SupervisorLimits, boot, shut_down,
+    start_ledger_task, start_state_actor, state_queue,
 };
 use uaos_state::journal::{EventDraft, FlushPolicy, JOURNAL_DIR, Journal, OpenEvidence, read_verified};
 
@@ -110,12 +119,23 @@ impl World {
 
     /// Opens the journal and boots under `config`.
     fn boot(&self, config: &ConfigSnapshot) -> Result<Booted, BootError> {
+        self.boot_with(config, FlushPolicy::Strict)
+    }
+
+    /// Opens the journal under `policy` and boots under `config`.
+    fn boot_with(&self, config: &ConfigSnapshot, policy: FlushPolicy) -> Result<Booted, BootError> {
         let clock: Arc<dyn Clock> = self.clock.clone();
         let rng: Arc<dyn Rng> = self.rng.clone();
-        let opened =
-            Journal::open_verified(Arc::new(self.fs.clone()), clock, rng, &self.data, FlushPolicy::Strict).unwrap();
+        let opened = Journal::open_verified(Arc::new(self.fs.clone()), clock, rng, &self.data, policy).unwrap();
         let mut journal = opened.journal;
         boot(&mut journal, &opened.records, opened.evidence, config, correlation())
+    }
+
+    /// The OS writes back `num`/`den` of each journal file's unflushed bytes on its own.
+    fn write_back_part(&self, num: usize, den: usize) {
+        for file in self.fs.list_dir(&self.data.join(JOURNAL_DIR)).unwrap() {
+            self.fs.write_back_part(&file, num, den);
+        }
     }
 }
 
@@ -155,6 +175,129 @@ enum Fate {
     Denied,
     /// The crash fell between the reserve entry and the intent: a reservation no intent names.
     ReservedOnly,
+    /// One-record intent, nothing after: the crash interrupted it.
+    OneOpen,
+    /// One-record intent and `op.executing`, nothing after.
+    OneExecuting,
+    /// One-record intent, `op.executing`, then `op.committed` with its settlement.
+    OneCommitted,
+    /// One-record intent, then `op.failed` releasing the reservation, never sent.
+    OneReleased,
+    /// One-record intent closed by an earlier boot's `op.indeterminate`, with its settlement.
+    OneAlreadyIndeterminate,
+}
+
+impl Fate {
+    const fn one_record(self) -> bool {
+        matches!(
+            self,
+            Self::OneOpen | Self::OneExecuting | Self::OneCommitted | Self::OneReleased | Self::OneAlreadyIndeterminate
+        )
+    }
+
+    /// An intent with no outcome: boot makes it indeterminate.
+    const fn open(self) -> bool {
+        matches!(self, Self::Open | Self::OneOpen | Self::OneExecuting)
+    }
+}
+
+/// An Operation record carrying `fields` and a ledger delta.
+fn with_delta(draft: EventDraft, fields: serde_json::Value, delta: &LedgerDelta) -> EventDraft {
+    let mut payload = fields;
+    payload
+        .as_object_mut()
+        .unwrap()
+        .insert(LEDGER_FIELD.to_owned(), serde_json::to_value(delta).unwrap());
+    EventDraft {
+        payload_inline: Some(InlinePayload::new(payload).unwrap()),
+        ..draft
+    }
+}
+
+/// A one-record Operation, as the ledger task will write it (E4): each transition one record, its
+/// entries prepared before it and applied after its acknowledgement.
+fn one_record(
+    journal: &mut Journal,
+    ledger: &mut Ledger,
+    operation: OperationId,
+    id: ReservationId,
+    fate: Fate,
+    version: u64,
+) {
+    // Every id the Operation's records carry: its intent's.
+    let event = |event_type| EventDraft {
+        session_id: Some(SessionId::from_parts(2, [2; 10])),
+        pocket_id: Some(PocketId::from_parts(3, [3; 10])),
+        request_id: Some(RequestId::from_parts(4, [4; 10])),
+        agent_id: Some(AgentId::from_parts(5, [5; 10])),
+        correlation_id: CorrelationId::from_parts(6, [6; 10]),
+        risk_tier: RiskTier::new(2).unwrap(),
+        ..op_event(operation, event_type, version)
+    };
+    let batch = ledger
+        .prepare_reserve(pool(), id, NanoUsd::new(RESERVED), &Actor::System)
+        .unwrap();
+    let intent = serde_json::json!({"kind": "model_call", "upstream": "primary", "durability": "balanced"});
+    journal
+        .append(with_delta(
+            event(types::OP_RESERVED_INTENT),
+            intent,
+            &batch.delta().unwrap(),
+        ))
+        .unwrap();
+    let held = ledger.apply(batch);
+    if matches!(fate, Fate::OneOpen) {
+        drop(held);
+        return;
+    }
+    if matches!(fate, Fate::OneReleased) {
+        let batch = ledger.prepare_release(held, &Actor::System).unwrap();
+        let fields = serde_json::json!({"reason": "stopped", "sent": false});
+        journal
+            .append(with_delta(event(types::OP_FAILED), fields, &batch.delta().unwrap()))
+            .unwrap();
+        ledger.apply(batch);
+        return;
+    }
+    let executing = matches!(fate, Fate::OneExecuting | Fate::OneCommitted);
+    if executing {
+        journal.append(event(types::OP_EXECUTING)).unwrap();
+    }
+    match fate {
+        Fate::OneCommitted => {
+            let batch = ledger
+                .prepare_settle(
+                    held.begin(),
+                    Usage::Reported(NanoUsd::new(RESERVED - 100)),
+                    &Actor::System,
+                )
+                .unwrap();
+            let fields = serde_json::json!({"reason": "completed", "usage_final": true});
+            journal
+                .append(with_delta(event(types::OP_COMMITTED), fields, &batch.delta().unwrap()))
+                .unwrap();
+            let _settled = ledger.apply(batch);
+        }
+        Fate::OneAlreadyIndeterminate => {
+            // An earlier, complete boot: the full reservation settled, estimated, in the record.
+            let batch = ledger
+                .prepare_settle(held.begin(), Usage::Unknown, &Actor::System)
+                .unwrap();
+            let fields = serde_json::json!({
+                "reason": CRASH_RECOVERY, "may_have_taken_effect": true, "executing_recorded": false,
+            });
+            journal
+                .append(with_delta(
+                    event(types::OP_INDETERMINATE),
+                    fields,
+                    &batch.delta().unwrap(),
+                ))
+                .unwrap();
+            let _settled = ledger.apply(batch);
+            journal.append(earlier_boot(version)).unwrap();
+        }
+        _ => drop(held.begin()),
+    }
 }
 
 /// Writes a journal in which each Operation reserved `RESERVED` and then met its fate. An open
@@ -176,6 +319,11 @@ fn build(world: &World, fates: &[Fate], version: u64) {
     }
     for (n, fate) in fates.iter().enumerate() {
         let operation = op(u8::try_from(n).unwrap());
+        if fate.one_record() {
+            let id = ReservationId::from_parts(u64::try_from(n).unwrap() + 1, [7; 10]);
+            one_record(&mut journal, &mut ledger, operation, id, *fate, version);
+            continue;
+        }
         let held = {
             let mut sink = JournalSink::new(&mut journal, correlation(), Some(operation), ConfigVersion(version));
             ledger
@@ -197,6 +345,11 @@ fn build(world: &World, fates: &[Fate], version: u64) {
             .unwrap();
         match fate {
             Fate::Open | Fate::ReservedOnly => drop(held.begin()),
+            Fate::OneOpen
+            | Fate::OneExecuting
+            | Fate::OneCommitted
+            | Fate::OneReleased
+            | Fate::OneAlreadyIndeterminate => unreachable!("one-record fates are written above"),
             Fate::Denied => {
                 let mut sink = JournalSink::new(&mut journal, correlation(), Some(operation), ConfigVersion(version));
                 ledger.release(&mut sink, held, &Actor::System).unwrap();
@@ -583,7 +736,22 @@ fn a_full_disk_reads_the_same_wherever_boot_meets_it() {
     );
 }
 
-// ── Convergence ────────────────────────────────────────────────────────────────────────
+// ── Convergence ──────────────────────────────.
+
+/// How many `op.indeterminate` each Operation has, read from the records alone: a boot that
+/// recovered an Operation twice leaves a journal whose entries the reader then refuses, so this
+/// is checked before anything reads the entries.
+fn indeterminate_counts(world: &World) -> BTreeMap<OperationId, usize> {
+    let mut counts = BTreeMap::new();
+    for envelope in world.envelopes() {
+        if envelope.event_type == types::OP_INDETERMINATE
+            && let Some(operation) = envelope.operation_id
+        {
+            *counts.entry(operation).or_insert(0) += 1;
+        }
+    }
+    counts
+}
 
 /// What boot leaves: the pool's balances and, per Operation, how many `op.indeterminate` the
 /// journal holds.
@@ -598,15 +766,7 @@ fn outcome(world: &World) -> ((NanoUsd, NanoUsd, NanoUsd), BTreeMap<OperationId,
     assert!(keys.values().all(|n| *n == 1), "a ledger entry was journaled twice");
     let ledger = Ledger::replay(&entries).unwrap();
     let state = ledger.state().pool(pool()).unwrap();
-    let mut indeterminate = BTreeMap::new();
-    for record in &records {
-        if record.envelope.event_type == types::OP_INDETERMINATE
-            && let Some(operation) = record.envelope.operation_id
-        {
-            *indeterminate.entry(operation).or_insert(0) += 1;
-        }
-    }
-    ((state.available, state.held, state.spent), indeterminate)
+    ((state.available, state.held, state.spent), indeterminate_counts(world))
 }
 
 fn fates() -> impl Strategy<Value = Vec<Fate>> {
@@ -618,8 +778,13 @@ fn fates() -> impl Strategy<Value = Vec<Fate>> {
             Fate::AlreadyIndeterminate,
             Fate::Denied,
             Fate::ReservedOnly,
+            Fate::OneOpen,
+            Fate::OneExecuting,
+            Fate::OneCommitted,
+            Fate::OneReleased,
+            Fate::OneAlreadyIndeterminate,
         ]),
-        1..6,
+        1..7,
     )
 }
 
@@ -647,62 +812,129 @@ fn draft_of(envelope: &EventEnvelope) -> EventDraft {
     }
 }
 
+/// What an uncut boot of `fates` leaves, the records it appended, and whether it said a stop may
+/// have been lost.
+struct Reference {
+    expected: ((NanoUsd, NanoUsd, NanoUsd), BTreeMap<OperationId, usize>),
+    appended: Vec<EventEnvelope>,
+    says_lost: bool,
+}
+
+fn reference(fates: &[Fate]) -> Result<Reference, TestCaseError> {
+    let world = World::new();
+    build(&world, fates, 1);
+    let before = world.records().len();
+    let first = world.boot(&config(1));
+    prop_assert!(first.is_ok(), "an uncut boot failed: {:?}", first.err());
+    let says_lost = first.unwrap().report.stop_may_be_lost;
+    world.fs.crash();
+    let counts = indeterminate_counts(&world);
+    prop_assert!(
+        counts.values().all(|n| *n == 1),
+        "an Operation was recovered twice by an uncut boot: {:?}",
+        counts
+    );
+    let expected = outcome(&world);
+    let appended = world.envelopes().split_off(before);
+    prop_assert_eq!(
+        appended.last().map(|e| e.event_type.clone()),
+        Some(types::KERNEL_BOOTED),
+        "a boot did not end with its record"
+    );
+    Ok(Reference {
+        expected,
+        appended,
+        says_lost,
+    })
+}
+
+/// The next complete boot after an interrupted one, of which `kept` appends survived, converges on
+/// what the uncut boot left.
+fn converges(world: &World, fates: &[Fate], reference: &Reference, kept: usize) -> Result<(), TestCaseError> {
+    let booted = world.boot(&config(1));
+    prop_assert!(
+        booted.is_ok(),
+        "the boot after a crash at append {} failed: {:?}",
+        kept,
+        booted.as_ref().err()
+    );
+    let report = booted.unwrap().report;
+    world.fs.crash();
+    let counts = indeterminate_counts(world);
+    prop_assert!(
+        counts.values().all(|n| *n == 1),
+        "an Operation was recovered twice after a crash at append {}: {:?}",
+        kept,
+        counts
+    );
+    prop_assert!(report.stuck.is_empty(), "recovery left an item stuck");
+    prop_assert_eq!(
+        outcome(world),
+        reference.expected.clone(),
+        "a crash during boot did not converge"
+    );
+    // The first complete boot after a crash says what an uncut boot says, even when the interrupted
+    // boot closed everything. A cut after recovering only reservations no intent named leaves no
+    // evidence: the residual states, which a one-record history does not leave.
+    let last_ledger = reference
+        .appended
+        .iter()
+        .rposition(|e| e.event_type == types::BUDGET_ENTRY);
+    let residual = !fates.iter().any(|fate| fate.open())
+        && fates.contains(&Fate::ReservedOnly)
+        && last_ledger.is_some_and(|last| kept > last);
+    if kept < reference.appended.len() && !residual {
+        prop_assert_eq!(
+            report.stop_may_be_lost,
+            reference.says_lost,
+            "an interrupted boot hid a lost stop"
+        );
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    /// For random journals, a boot cut after its n-th append, for every n, then a full boot,
-    /// leaves what a boot with no cut leaves: the same balances, every open intent
-    /// indeterminate, and no Operation indeterminate twice. The cut journal holds exactly the
-    /// first n records a real boot appended, which is what a crash between two appends leaves
-    /// (an acknowledged append survives a crash, and open cuts a torn one).
+    /// For random journals in both forms, a boot cut after its n-th append, for every n, then a
+    /// full boot, leaves what a boot with no cut leaves: the same balances, every open intent
+    /// indeterminate, and no Operation recovered twice. The cut journal holds exactly the first n
+    /// records a real boot appended, which is what a crash between two appends leaves (an
+    /// acknowledged append survives a crash, and open cuts a torn one).
     #[test]
     fn a_crash_during_boot_converges(fates in fates()) {
-        let reference = World::new();
-        build(&reference, &fates, 1);
-        let before = reference.records().len();
-        let first = reference.boot(&config(1));
-        prop_assert!(first.is_ok());
-        let says_lost = first.unwrap().report.stop_may_be_lost;
-        reference.fs.crash();
-        let expected = outcome(&reference);
-        prop_assert!(
-            expected.1.values().all(|n| *n == 1),
-            "a boot made an Operation indeterminate twice"
-        );
-        let appended = reference.envelopes().split_off(before);
-        let last_ledger = appended.iter().rposition(|e| e.event_type == types::BUDGET_ENTRY);
-        prop_assert_eq!(
-            appended.last().map(|e| e.event_type.clone()),
-            Some(types::KERNEL_BOOTED),
-            "a boot did not end with its record"
-        );
-
-        for n in 0..=appended.len() {
+        let reference = reference(&fates)?;
+        for n in 0..=reference.appended.len() {
             let world = World::new();
             build(&world, &fates, 1);
             {
                 let mut journal = world.open();
-                for envelope in &appended[..n] {
+                for envelope in &reference.appended[..n] {
                     journal.append(draft_of(envelope)).unwrap();
                 }
             }
             world.fs.crash();
-            let booted = world.boot(&config(1));
-            prop_assert!(booted.is_ok(), "the boot after a crash at append {} failed", n);
-            let report = booted.unwrap().report;
-            prop_assert!(report.stuck.is_empty(), "recovery left an item stuck");
-            world.fs.crash();
-            prop_assert_eq!(outcome(&world), expected.clone(), "a crash during boot did not converge");
-            // The first complete boot after a crash says what an uncut boot says, even when the
-            // interrupted boot closed everything. A cut after recovering a reservation no intent
-            // named leaves no evidence: the residual §2 step 5 states, which one-record intent
-            // removes.
-            let residual = !fates.contains(&Fate::Open)
-                && fates.contains(&Fate::ReservedOnly)
-                && last_ledger.is_some_and(|last| n > last);
-            if n < appended.len() && !residual {
-                prop_assert_eq!(report.stop_may_be_lost, says_lost, "an interrupted boot hid a lost stop");
-            }
+            converges(&world, &fates, &reference, n)?;
+        }
+    }
+
+    /// Power loss during boot. Boot runs under the default balanced flush policy, the OS writes
+    /// back a part of its unflushed bytes (none, a quarter, a half, three quarters, all), and the
+    /// machine loses power: the journal keeps its durable prefix, which may end inside a record.
+    /// The next boot converges as after a cut.
+    #[test]
+    fn a_power_loss_during_boot_converges(fates in fates()) {
+        let reference = reference(&fates)?;
+        for quarters in 0..=4 {
+            let world = World::new();
+            build(&world, &fates, 1);
+            let before = world.records().len();
+            prop_assert!(world.boot_with(&config(1), FlushPolicy::default()).is_ok());
+            world.write_back_part(quarters, 4);
+            world.fs.power_loss();
+            let kept = world.records().len().saturating_sub(before);
+            prop_assert!(kept <= reference.appended.len());
+            converges(&world, &fates, &reference, kept)?;
         }
     }
 }
@@ -949,4 +1181,495 @@ fn a_seal_naming_another_record_is_a_crash() {
         LastEnd::Crashed,
         "a shutdown no seal names was read as clean"
     );
+}
+
+// ── One-record recovery ──────────────.
+
+/// The reservation `build` names for its `n`-th Operation.
+fn reservation(n: u8) -> ReservationId {
+    ReservationId::from_parts(u64::from(n) + 1, [7; 10])
+}
+
+#[test]
+fn an_open_one_record_operation_recovers_in_its_own_record() {
+    let world = World::new();
+    build(&world, &[Fate::OneOpen, Fate::OneExecuting], 1);
+    let before = world.records().len();
+    let booted = world.boot(&config(1)).unwrap();
+    let envelopes = world.envelopes();
+    let appended = &envelopes[before..];
+    assert!(
+        appended.iter().all(|e| e.event_type != types::BUDGET_ENTRY),
+        "a one-record recovery entry was journaled under boot's correlation"
+    );
+    for (n, executing) in [(0, false), (1, true)] {
+        let operation = op(n);
+        let intent = envelopes
+            .iter()
+            .find(|e| e.event_type == types::OP_RESERVED_INTENT && e.operation_id == Some(operation))
+            .unwrap();
+        let made: Vec<_> = appended
+            .iter()
+            .filter(|e| e.event_type == types::OP_INDETERMINATE && e.operation_id == Some(operation))
+            .collect();
+        assert_eq!(made.len(), 1, "Operation {n} was not recovered once");
+        let made = made[0];
+        assert_eq!(
+            (
+                made.parent_id,
+                made.correlation_id,
+                made.session_id,
+                made.pocket_id,
+                made.request_id,
+                made.agent_id,
+                made.risk_tier,
+                made.side_effect_class,
+            ),
+            (
+                Some(intent.id),
+                intent.correlation_id,
+                intent.session_id,
+                intent.pocket_id,
+                intent.request_id,
+                intent.agent_id,
+                intent.risk_tier,
+                intent.side_effect_class,
+            ),
+            "a recovery record is not attributed to its Operation"
+        );
+        assert!(made.session_id.is_some() && made.correlation_id != correlation());
+        let payload = made.payload_inline.as_ref().unwrap().as_value();
+        assert_eq!(
+            payload["executing_recorded"],
+            serde_json::json!(executing),
+            "the recovery record hides the Operation's op.executing"
+        );
+        assert_eq!(
+            (&payload["reason"], &payload["may_have_taken_effect"]),
+            (&serde_json::json!(CRASH_RECOVERY), &serde_json::json!(true))
+        );
+        let delta: LedgerDelta = serde_json::from_value(payload[LEDGER_FIELD].clone()).unwrap();
+        assert_eq!(delta.reservation, reservation(n));
+        assert_eq!(
+            delta
+                .entries
+                .iter()
+                .map(|entry| (entry.kind, entry.amount, entry.estimated))
+                .collect::<Vec<_>>(),
+            [(BudgetTxKind::Settle, NanoUsd::new(RESERVED), true)],
+            "the reservation was not settled in full, estimated, in its Operation's record"
+        );
+    }
+    let report = &booted.report;
+    assert_eq!(report.indeterminate, [op(0), op(1)]);
+    assert_eq!((report.indeterminate_settled, report.settled_estimated), (2, 0));
+    let record = appended.last().unwrap().payload_inline.as_ref().unwrap().as_value();
+    assert_eq!(
+        (&record["indeterminate_settled"], &record["settled_estimated"]),
+        (&serde_json::json!("2"), &serde_json::json!("0"))
+    );
+    assert!(!booted.ledger.needs_recovery());
+    assert_eq!(booted.ledger.state().open_reservations(), 0);
+}
+
+/// A crafted `budget.entry` on pool 9: an allocation of 0 under `key`, so the recovery entry that
+/// needs that key is refused (a stuck item), or the transfer `t` from the main pool, whose own
+/// `transfer_in` never landed.
+fn crafted(
+    key: &str,
+    kind: BudgetTxKind,
+    pool_id: PoolId,
+    amount: i64,
+    before: i64,
+    counterparty: Option<PoolId>,
+) -> BudgetTx {
+    BudgetTx {
+        schema: BudgetTxSchema::V1,
+        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        pool_id,
+        principal: Actor::System,
+        session_id: None,
+        kind,
+        amount: NanoUsd::new(amount),
+        balance_before: NanoUsd::new(before),
+        balance_after: NanoUsd::new(
+            before
+                - if kind == BudgetTxKind::TransferOut {
+                    amount
+                } else {
+                    -amount
+                },
+        ),
+        reason_code: ReasonCode::new(if kind == BudgetTxKind::TransferOut {
+            "transfer"
+        } else {
+            "allocate"
+        })
+        .unwrap(),
+        related_event: None,
+        reservation_id: None,
+        counterparty_pool: counterparty,
+        settled: false,
+        estimated: false,
+    }
+}
+
+#[test]
+fn stuck_items_are_counted_by_kind_on_this_boot_and_the_next() {
+    let world = World::new();
+    // A one-record and a two-record Operation left open, each with its settlement's key taken,
+    // and a transfer whose second half's key is taken.
+    build(&world, &[Fate::OneOpen, Fate::Open], 1);
+    let available = Ledger::replay(&entries_from_journal(&world.records()).unwrap())
+        .unwrap()
+        .state()
+        .pool(pool())
+        .unwrap()
+        .available
+        .get();
+    {
+        let mut journal = world.open();
+        let mut sink = JournalSink::new(&mut journal, correlation(), None, ConfigVersion(1));
+        let side = PoolId::from_parts(9, [9; 10]);
+        for key in [
+            format!("{}:settle", reservation(0)),
+            format!("{}:settle", reservation(1)),
+            "t:in".to_owned(),
+        ] {
+            sink.record(&crafted(&key, BudgetTxKind::Allocate, side, 0, 0, None))
+                .unwrap();
+        }
+        sink.record(&crafted(
+            "t",
+            BudgetTxKind::TransferOut,
+            pool(),
+            10,
+            available,
+            Some(side),
+        ))
+        .unwrap();
+    }
+    world.fs.crash();
+    let counts = |booted: &Booted| {
+        let record = world.envelopes().last().unwrap().payload_inline.clone().unwrap();
+        let record = record.as_value();
+        (
+            booted.report.stuck.len(),
+            record["stuck"].clone(),
+            record["stuck_reservations"].clone(),
+            record["stuck_transfers"].clone(),
+        )
+    };
+    let expected = (
+        3,
+        serde_json::json!("3"),
+        serde_json::json!("2"),
+        serde_json::json!("1"),
+    );
+    let first = world.boot(&config(1)).unwrap();
+    assert_eq!(counts(&first), expected, "the first boot miscounted the stuck items");
+    assert!(first.ledger.needs_recovery(), "the ledger went live with items stuck");
+    world.fs.crash();
+    let next = world.boot(&config(1)).unwrap();
+    assert_eq!(
+        counts(&next),
+        expected,
+        "the next boot counted the stuck items differently"
+    );
+    assert_eq!(next.report.stuck, first.report.stuck);
+    assert!(next.ledger.needs_recovery(), "the ledger went live with items stuck");
+}
+
+/// A stuck reservation stays open from boot to boot until repaired, and `kernel.booted` already
+/// counts it, so a clean shutdown whose only open reservation is a stuck item counts 0, and the
+/// next boot does not say a stop may have been lost.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "joining the actor's thread blocks: the test waits for it off the runtime's threads"
+)]
+async fn a_clean_shutdown_does_not_count_a_stuck_item() {
+    let world = World::new();
+    // A one-record Operation left open, its settlement's key taken: boot leaves it stuck.
+    let (journal, booted) = left_stuck(&world, &[Fate::OneOpen]);
+    assert_eq!(booted.report.stuck.len(), 1);
+
+    // The run: the state actor, the ledger task holding the stuck item, admission; then a clean
+    // shutdown.
+    let supervisor = Supervisor::new(tokio::runtime::Handle::current(), SupervisorLimits::default());
+    let (state, queue) = state_queue(DEFAULT_QUEUE_CAPACITY);
+    let actor = start_state_actor(&supervisor, StateCore::new(journal), queue).unwrap();
+    let by = EngagedBy {
+        actor: Actor::Human,
+        correlation_id: correlation(),
+        config_version: ConfigVersion(1),
+    };
+    let (ledger, _task) = start_ledger_task(
+        &supervisor,
+        booted.ledger,
+        state.clone(),
+        booted.stop.clone(),
+        by.clone(),
+        DEFAULT_LEDGER_QUEUE,
+    )
+    .unwrap();
+    let admission = Admission::new(AdmissionLimits::default(), booted.stop.clone());
+    shut_down(&admission, &state, Some(&ledger), by, Duration::from_secs(1))
+        .await
+        .unwrap();
+    drop((ledger, state));
+    tokio::task::spawn_blocking(move || actor.join().unwrap())
+        .await
+        .unwrap();
+
+    let shutdown = world
+        .envelopes()
+        .into_iter()
+        .rev()
+        .find(|e| e.event_type == types::KERNEL_SHUTDOWN)
+        .unwrap();
+    assert_eq!(
+        shutdown.payload_inline.unwrap().as_value()["open_operations"],
+        "0",
+        "a stuck item was counted as work left open"
+    );
+    let next = world.boot(&config(1)).unwrap();
+    assert_eq!(next.report.last_end, LastEnd::Clean);
+    assert!(
+        !next.report.stop_may_be_lost,
+        "a stuck item made the next boot say a stop may have been lost"
+    );
+    assert_eq!(next.report.stuck, booted.report.stuck);
+}
+
+/// Each Operation of `fates` left open with its settlement's key taken, then booted: boot leaves
+/// each reservation stuck. Returns the booted journal, ready for the run after the boot.
+fn left_stuck(world: &World, fates: &[Fate]) -> (Journal, Booted) {
+    build(world, fates, 1);
+    {
+        let mut journal = world.open();
+        let mut sink = JournalSink::new(&mut journal, correlation(), None, ConfigVersion(1));
+        let side = PoolId::from_parts(9, [9; 10]);
+        for n in 0..fates.len() {
+            let key = format!("{}:settle", reservation(u8::try_from(n).unwrap()));
+            sink.record(&crafted(&key, BudgetTxKind::Allocate, side, 0, 0, None))
+                .unwrap();
+        }
+    }
+    world.fs.crash();
+    let clock: Arc<dyn Clock> = world.clock.clone();
+    let rng: Arc<dyn Rng> = world.rng.clone();
+    let opened =
+        Journal::open_verified(Arc::new(world.fs.clone()), clock, rng, &world.data, FlushPolicy::Strict).unwrap();
+    let mut journal = opened.journal;
+    let booted = boot(
+        &mut journal,
+        &opened.records,
+        opened.evidence,
+        &config(1),
+        correlation(),
+    )
+    .unwrap();
+    (journal, booted)
+}
+
+/// The journal after the repairs: Operations 0 to 2 (one-record) each have one resolution
+/// record, written by the human, reason `stuck_repair`, no `sent`, of the type its repair
+/// names (0 settled and committed, 1 settled and failed, 2 released); Operation 3 (two-record) is
+/// released in `budget.entry` records. Every repair entry reads, with its reason and principal.
+fn assert_repaired(world: &World) {
+    let envelopes = world.envelopes();
+    for (n, event_type, resolution) in [
+        (0, types::OP_COMMITTED, "settled"),
+        (1, types::OP_FAILED, "settled"),
+        (2, types::OP_FAILED, "released"),
+    ] {
+        let resolutions: Vec<_> = envelopes
+            .iter()
+            .filter(|e| {
+                e.operation_id == Some(op(n)) && [types::OP_COMMITTED, types::OP_FAILED].contains(&e.event_type)
+            })
+            .collect();
+        assert_eq!(resolutions.len(), 1, "the repair is not the Operation's one resolution");
+        let found = resolutions[0];
+        assert_eq!(
+            found.event_type, event_type,
+            "a repair's outcome wrote the wrong record type"
+        );
+        let payload = found.payload_inline.as_ref().unwrap().as_value();
+        assert_eq!(
+            (payload["reason"].clone(), payload["resolution"].clone()),
+            (serde_json::json!("stuck_repair"), serde_json::json!(resolution))
+        );
+        assert!(payload.get("sent").is_none(), "a repair wrote `sent`");
+        assert_eq!(found.actor, Actor::Human);
+    }
+    let entries = entries_from_journal(&world.records()).unwrap();
+    let repaired = |n: u8, kind: BudgetTxKind| {
+        entries.iter().any(|tx| {
+            tx.reservation_id == Some(reservation(n))
+                && tx.kind == kind
+                && tx.reason_code.as_str() == "stuck_repair"
+                && tx.principal == Actor::Human
+        })
+    };
+    for n in [0, 1] {
+        assert!(repaired(n, BudgetTxKind::Settle) && repaired(n, BudgetTxKind::Release));
+    }
+    assert!(repaired(2, BudgetTxKind::Release) && repaired(3, BudgetTxKind::Release));
+}
+
+/// Operation `n`'s record fields and its intent's event id, as the journal holds them.
+fn resolution(world: &World, n: u8) -> (OperationRecord, EventId) {
+    let intent = world
+        .envelopes()
+        .into_iter()
+        .find(|e| e.event_type == types::OP_RESERVED_INTENT && e.operation_id == Some(op(n)))
+        .unwrap();
+    (operation_record(&intent), intent.id)
+}
+
+/// The run after a boot: the state actor on `journal` and the ledger task holding `ledger`.
+fn run_after_boot(
+    journal: Journal,
+    ledger: Ledger,
+    stop: &Stop,
+) -> (Supervisor, StateHandle, StateActor, LedgerHandle, EngagedBy) {
+    let supervisor = Supervisor::new(tokio::runtime::Handle::current(), SupervisorLimits::default());
+    let (state, queue) = state_queue(DEFAULT_QUEUE_CAPACITY);
+    let actor = start_state_actor(&supervisor, StateCore::new(journal), queue).unwrap();
+    let engaged_by = EngagedBy {
+        actor: Actor::Human,
+        correlation_id: correlation(),
+        config_version: ConfigVersion(1),
+    };
+    let (ledger, _task) = start_ledger_task(
+        &supervisor,
+        ledger,
+        state.clone(),
+        stop.clone(),
+        engaged_by.clone(),
+        DEFAULT_LEDGER_QUEUE,
+    )
+    .unwrap();
+    (supervisor, state, actor, ledger, engaged_by)
+}
+
+/// An Operation's record fields, as its intent holds them.
+fn operation_record(intent: &EventEnvelope) -> OperationRecord {
+    let payload = intent.payload_inline.as_ref().unwrap().as_value();
+    OperationRecord {
+        operation_id: intent.operation_id.unwrap(),
+        session_id: intent.session_id,
+        pocket_id: intent.pocket_id,
+        request_id: intent.request_id,
+        agent_id: intent.agent_id,
+        correlation_id: intent.correlation_id,
+        actor: intent.actor.clone(),
+        kind: serde_json::from_value::<OperationKind>(payload["kind"].clone()).unwrap(),
+        upstream: payload["upstream"].as_str().unwrap().to_owned(),
+        side_effect_class: intent.side_effect_class,
+        compensable: intent.compensable,
+        risk_tier: intent.risk_tier,
+        config_version: intent.config_version,
+    }
+}
+
+/// row 18 (the task's side): a stuck item's repair through the ledger task. A one-record
+/// reservation's is its Operation's resolution record, after the entry-less `op.indeterminate` that
+/// left it stuck: `op.committed` or `op.failed` for a settlement by its outcome, `op.failed` for a
+/// release, each with reason `stuck_repair`, actor `human`, and no `sent`. Named with another
+/// Operation's record it is refused and writes nothing. A two-record reservation's is
+/// `budget.entry` records. Once the last is repaired the ledger accepts new work, the journal
+/// reads, and the next boot finds nothing stuck.
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "joining the actor's thread blocks: the test waits for it off the runtime's threads"
+)]
+async fn a_repair_through_the_ledger_task_resolves_its_stuck_item() {
+    let world = World::new();
+    // Three one-record Operations and a two-record one, each left stuck.
+    let fates = [Fate::OneOpen, Fate::OneOpen, Fate::OneOpen, Fate::Open];
+    let (journal, booted) = left_stuck(&world, &fates);
+    let item = |n: u8| {
+        booted
+            .report
+            .stuck
+            .iter()
+            .find(|item| item.kind == StuckKind::Reservation(reservation(n)))
+            .cloned()
+            .unwrap()
+    };
+    let items = [item(0), item(1), item(2), item(3)];
+    let stop = booted.stop.clone();
+    let (_supervisor, state, actor, ledger, engaged_by) = run_after_boot(journal, booted.ledger, &stop);
+    let by = |resolves| RepairBy {
+        principal: Actor::Human,
+        correlation_id: correlation(),
+        config_version: ConfigVersion(1),
+        resolves,
+    };
+    let settle = |outcome| Repair::Settle {
+        amount: NanoUsd::new(40),
+        outcome,
+    };
+    // Named with another Operation's record, a one-record repair is refused and writes nothing.
+    let (record, intent) = resolution(&world, 0);
+    let mut other = record.clone();
+    other.operation_id = op(1);
+    let refused = ledger
+        .repair(
+            items[0].clone(),
+            settle(RepairOutcome::Committed),
+            by(Some((other, intent))),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, LedgerCallError::Record(_)), "{refused:?}");
+    // The ledger, not the item's reason, says which form a repair takes: a listing taken at another
+    // time may give the same item another reason (of E4).
+    let relisted = StuckItem {
+        kind: items[0].kind.clone(),
+        reason: ReasonCode::new("awaiting_repair").unwrap(),
+    };
+    ledger
+        .repair(relisted, settle(RepairOutcome::Committed), by(Some((record, intent))))
+        .await
+        .unwrap();
+    let failed = settle(RepairOutcome::Failed);
+    ledger
+        .repair(items[1].clone(), failed, by(Some(resolution(&world, 1))))
+        .await
+        .unwrap();
+    ledger
+        .repair(items[2].clone(), Repair::Release, by(Some(resolution(&world, 2))))
+        .await
+        .unwrap();
+    ledger
+        .repair(items[3].clone(), Repair::Release, by(None))
+        .await
+        .unwrap();
+    let snapshot = ledger.snapshot().await.unwrap();
+    assert!(
+        !snapshot.needs_recovery,
+        "the last repair left the ledger refusing new work"
+    );
+    let admission = Admission::new(AdmissionLimits::default(), stop.clone());
+    shut_down(&admission, &state, Some(&ledger), engaged_by, Duration::from_secs(1))
+        .await
+        .unwrap();
+    drop((ledger, state));
+    tokio::task::spawn_blocking(move || actor.join().unwrap())
+        .await
+        .unwrap();
+
+    assert_repaired(&world);
+    let next = world.boot(&config(1)).unwrap();
+    assert!(
+        next.report.stuck.is_empty(),
+        "a repaired item was stuck on the next boot"
+    );
+    assert_eq!(next.report.last_end, LastEnd::Clean);
+    assert!(!next.ledger.needs_recovery());
 }

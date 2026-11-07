@@ -360,7 +360,7 @@ async fn a_refused_start_hands_the_journal_back() {
         "a refused start lost a record the journal acknowledged"
     );
     drop(queue);
-    assert_eq!(handle.append(record(2)).await.unwrap_err(), StateError::Closed);
+    assert_eq!(handle.append(record(2)).await.unwrap_err(), StateError::NotQueued);
 }
 
 /// The operating system can refuse a thread. The refusal is counted, and the core comes back.
@@ -898,12 +898,29 @@ fn appends_inside_the_pause_try_nothing() {
     core.append(record(1)).unwrap();
     world.fs.set_capacity(Some(0));
     let _engaged = stop.engage(StopReason::Operator, operator());
-    assert!(core.append(record(2)).is_err());
+    // The try touched the journal for the stop's line, not for the command's: the command's line
+    // was never written, so the refusal says `StopPending`, which the ledger task reads as a write
+    // that wrote nothing (of E4).
+    let first_try = core.append(record(2)).unwrap_err();
+    assert!(
+        matches!(first_try, StateError::StopPending(_)),
+        "a command refused because its stop record failed read as a write of unknown fate: {first_try:?}"
+    );
     let (entries, tries) = (world.journal_entries(), core.stats().stop_record_retries);
     assert_eq!(tries, 1);
     for n in 0..200_u8 {
-        assert!(core.append(record(n)).is_err(), "a record went ahead of the stop's");
-        assert!(core.sync().is_err());
+        // Inside the pause nothing is tried, and the refusal says so (`StopPending`).
+        let refused = core.append(record(n)).unwrap_err();
+        assert_eq!(
+            core.stats().stop_record_retries,
+            tries,
+            "an append inside the pause tried the stop record again"
+        );
+        assert!(
+            matches!(refused, StateError::StopPending(_)),
+            "a refusal inside the pause did not say it wrote nothing: {refused:?}"
+        );
+        assert!(matches!(core.sync().unwrap_err(), StateError::StopPending(_)));
     }
     assert_eq!(
         (core.stats().stop_record_retries, world.journal_entries()),
@@ -914,6 +931,24 @@ fn appends_inside_the_pause_try_nothing() {
     world.clock.advance(11_000_000);
     assert!(core.append(record(3)).is_err());
     assert_eq!(core.stats().stop_record_retries, tries + 1);
+}
+
+/// The handle says which policy the journal flushes under, which an intent records as its
+/// `durability`.
+#[tokio::test]
+async fn the_handle_says_the_journals_flush_policy() {
+    let world = World::new();
+    let (handle, queue) = state_queue(DEFAULT_QUEUE_CAPACITY);
+    let supervisor = Supervisor::new(tokio::runtime::Handle::current(), SupervisorLimits::default());
+    let actor = start_state_actor(&supervisor, world.core_on(world.clock.clone(), Millis(60_000)), queue).unwrap();
+    assert_eq!(
+        handle.flush_policy().await.unwrap(),
+        FlushPolicy::Balanced { window: Millis(60_000) }
+    );
+    drop(handle);
+    tokio::task::spawn_blocking(move || actor.join().unwrap())
+        .await
+        .unwrap();
 }
 
 /// The pause between scheduled tries doubles from 10 ms and stops at 5 s, and only real tries
@@ -1141,4 +1176,31 @@ fn a_stop_record_whose_inline_flush_failed_is_journaled_once() {
         .filter(|r| r.event_type == types::KERNEL_STOPPED && r.actor == Actor::Human)
         .count();
     assert_eq!(stops, 1, "an engagement whose inline flush failed was journaled twice");
+}
+
+/// An append whose try of the stop record fails, here on a full disk, is refused with
+/// `StopPending`, and its own line is not among the journal's records. The command's line is
+/// appended only after the stop record lands, so this holds for every way that try can fail (a
+/// failed flush is recovered in place, so a full disk is the failure a test can reach).
+#[test]
+fn a_command_refused_for_its_stop_record_is_not_written() {
+    let world = World::new();
+    let stop = Stop::running();
+    let mut core = world
+        .core_on(world.clock.clone(), Millis(60_000))
+        .with_stop(stop.clone(), the_actor());
+    core.append(record(1)).unwrap();
+    let _engaged = stop.engage(StopReason::Operator, operator());
+    world.fs.set_capacity(Some(0));
+    let refused = core.append(record(2)).unwrap_err();
+    assert!(
+        matches!(refused, StateError::StopPending(_)),
+        "a command refused because its stop record failed read as a write of unknown fate: {refused:?}"
+    );
+    let refused_line = record(2).correlation_id;
+    let written = read_verified(&world.fs, &world.data.join(JOURNAL_DIR)).unwrap().0;
+    assert!(
+        !written.iter().any(|r| r.envelope.correlation_id == refused_line),
+        "a refused command's line was written"
+    );
 }

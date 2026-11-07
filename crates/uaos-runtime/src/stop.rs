@@ -35,19 +35,23 @@ pub enum StopReason {
     /// The journal failed in a way no other reason names: a write or a flush failed. A kernel that
     /// cannot journal refuses work.
     JournalFailed,
+    /// The ledger's writer failed: a ledger record's fate is unknown, or the ledger task's thread
+    /// unwound. No ledger writer means no spend.
+    LedgerFailed,
     /// A journaled stop whose reason this build does not know. It still boots stopped.
     Unrecognized,
 }
 
 impl StopReason {
     /// Every reason a stop can be engaged with.
-    pub const ENGAGEABLE: [Self; 6] = [
+    pub const ENGAGEABLE: [Self; 7] = [
         Self::Operator,
         Self::BudgetOverrun,
         Self::PayloadFlushFailed,
         Self::DiskFull,
         Self::CanaryHit,
         Self::JournalFailed,
+        Self::LedgerFailed,
     ];
 
     /// The journaled code.
@@ -60,6 +64,7 @@ impl StopReason {
             Self::DiskFull => "disk_full",
             Self::CanaryHit => "canary_hit",
             Self::JournalFailed => "journal_failed",
+            Self::LedgerFailed => "ledger_failed",
             Self::Unrecognized => "unrecognized",
         }
     }

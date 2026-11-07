@@ -38,8 +38,8 @@ use uaos_contracts::operation::{RiskTier, SideEffectClass};
 use uaos_contracts::time::WallTime;
 use uaos_contracts::wire::ConfigVersion;
 use uaos_ledger::{
-    Held, InFlight, JournalSink, Ledger, LedgerError, LedgerSink, LedgerState, MemorySink, Recovery, Reservation,
-    Settlement, Usage, entries_from_journal,
+    Held, InFlight, JournalSink, Ledger, LedgerError, LedgerSink, LedgerState, MemorySink, Recovery, RecoveryPlan,
+    Reservation, Settlement, Usage, entries_from_journal,
 };
 use uaos_platform::fs::Fs;
 use uaos_platform::sim::fs::SimFs;
@@ -350,7 +350,7 @@ fn a_recording_failure_poisons_until_rebuilt() {
     ));
     let mut rebuilt = Ledger::replay(&sink.entries).unwrap();
     assert_eq!(rebuilt.state().open_reservations(), 1);
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(report.settled_estimated, 1);
     assert_eq!(balances(&rebuilt, 0), (70, 0, 30));
 }
@@ -390,7 +390,7 @@ fn transfers_move_money_and_recovery_completes_a_half_recorded_one() {
         entries: half,
         fail_next: None,
     };
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(report.transfers_completed, 1);
     assert_eq!((balances(&rebuilt, 0).0, balances(&rebuilt, 1).0), (50, 50));
     let completed = sink.entries.last().unwrap();
@@ -439,7 +439,7 @@ fn recovery_settles_open_reservations_and_never_releases_them() {
     // The process dies holding both tokens.
     drop((held, in_flight));
     let mut rebuilt = Ledger::replay(&sink.entries).unwrap();
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(
         report,
         Recovery {
@@ -447,6 +447,7 @@ fn recovery_settles_open_reservations_and_never_releases_them() {
             completed: 0,
             transfers_completed: 0,
             stuck: Vec::new(),
+            stuck_items: Vec::new(),
         }
     );
     assert_eq!(balances(&rebuilt, 0), (70, 0, 30));
@@ -457,7 +458,7 @@ fn recovery_settles_open_reservations_and_never_releases_them() {
         "recovery settles; it never releases money that may have been spent"
     );
     // Recovery is idempotent.
-    let again = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let again = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(again, Recovery::default());
 }
 
@@ -479,7 +480,7 @@ fn recovery_completes_a_partial_settlement_with_the_reported_amount() {
         Err(LedgerError::Sink(_))
     ));
     let mut rebuilt = Ledger::replay(&sink.inner.entries).unwrap();
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(report.completed, 1);
     assert_eq!(
         balances(&rebuilt, 0),
@@ -640,7 +641,7 @@ impl JournalWorld {
 
     fn entries(&self) -> Result<Vec<BudgetTx>, String> {
         let (records, _) = read_verified(&self.fs, &Path::new("/data").join(JOURNAL_DIR)).unwrap();
-        entries_from_journal(&records)
+        entries_from_journal(&records).map_err(|e| e.to_string())
     }
 }
 
@@ -683,7 +684,9 @@ fn journal_entries_survive_a_crash_and_replay_to_the_live_ledger() {
     assert_eq!(entries.len(), 8);
     let mut rebuilt = Ledger::replay(&entries).unwrap();
     assert_eq!(rebuilt.state(), &live, "every critical entry survived the crash");
-    let report = rebuilt.recover(&mut journal_sink(&mut journal), &sys()).unwrap();
+    let report = rebuilt
+        .recover(&mut journal_sink(&mut journal), &sys(), &RecoveryPlan::default())
+        .unwrap();
     assert_eq!(report.settled_estimated, 1);
     assert_eq!(balances(&rebuilt, 0), (60, 0, 30));
     // Recovery's own entries are journaled too.
@@ -726,7 +729,7 @@ fn journal_reader_ignores_other_events_and_refuses_malformed_entries() {
         ))
         .unwrap();
     let error = world.entries().unwrap_err();
-    assert!(error.contains("malformed"), "{error}");
+    assert!(error.contains("is not a valid entry"), "{error}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1149,12 +1152,16 @@ impl Sim {
             );
         }
         self.ledger = rebuilt;
-        let report = self.ledger.recover(&mut self.sink, &sys()).map_err(unexpected)?;
+        let report = self
+            .ledger
+            .recover(&mut self.sink, &sys(), &RecoveryPlan::default())
+            .map_err(unexpected)?;
         let expected = Recovery {
             settled_estimated: self.open.len(),
             completed: std::mem::take(&mut self.partial_settles),
             transfers_completed: std::mem::take(&mut self.partial_transfers),
             stuck: Vec::new(),
+            stuck_items: Vec::new(),
         };
         for (_, (p, amount)) in std::mem::take(&mut self.open) {
             let b = self.bal(p);
@@ -1339,7 +1346,7 @@ fn a_rebuilt_ledger_refuses_new_work_until_recovered() {
         Err(LedgerError::Insufficient { .. })
     ));
 
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(report.completed, 1);
     assert!(!rebuilt.needs_recovery());
     assert_eq!(balances(&rebuilt, 0), (20, 0, 80), "the overrun is charged");
@@ -1405,7 +1412,7 @@ fn recovery_reports_a_stuck_item_and_still_closes_the_rest() {
         entries,
         fail_next: None,
     };
-    let report = rebuilt.recover(&mut sink, &sys()).unwrap();
+    let report = rebuilt.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap();
     assert_eq!(report.settled_estimated, 1, "the open reservation was still closed");
     assert_eq!(report.stuck.len(), 1, "{:?}", report.stuck);
     assert!(
@@ -1419,7 +1426,7 @@ fn recovery_is_boot_only_and_rejected_closes_hand_the_token_back() {
     let (mut ledger, mut sink) = funded(100);
     let held = ledger.reserve(&mut sink, pool(0), rid(1), usd(30), &sys()).unwrap();
     assert_eq!(
-        ledger.recover(&mut sink, &sys()).unwrap_err(),
+        ledger.recover(&mut sink, &sys(), &RecoveryPlan::default()).unwrap_err(),
         LedgerError::NotReplayed,
         "recovery must not settle a reservation whose token is still live"
     );
